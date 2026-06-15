@@ -1,0 +1,57 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    # Published to DockerHub. `docker compose build` tags the image with this
+    # name; `docker compose push` then uploads it. Bump the version on release.
+    image: hridayansh/cem-bioacoustics:1.1.0
+    container_name: cem-birdnet-api
+    ports:
+      - "8000:8000"
+    environment:
+      API_KEY: ${API_KEY:-changeme}
+      REQUIRE_AUTH: ${REQUIRE_AUTH:-true}
+      MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-2048}
+      MAX_CONCURRENT_TASKS: ${MAX_CONCURRENT_TASKS:-2}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-*}
+      # BirdNET parallel worker processes. Each loads its own TensorFlow model
+      # (~hundreds of MB). Lower this (e.g. 1) if BirdNET dies with
+      # "BrokenProcessPool" on a low-memory host. Default 2.
+      BIRDNET_MAX_WORKERS: ${BIRDNET_MAX_WORKERS:-2}
+      # Compute API version stamped into outputs + STAC items (item 12).
+      API_VERSION: ${API_VERSION:-1.1.0}
+      # STAC provenance per output (item 9).
+      STAC_ENABLED: ${STAC_ENABLED:-true}
+      STAC_COLLECTION: ${STAC_COLLECTION:-cem-bioacoustics}
+      STAC_ASSET_BASE_URL: ${STAC_ASSET_BASE_URL:-}
+      # File-browser deep link returned after a job (item 11). Another team's
+      # service; leave blank to disable the link.
+      FILE_BROWSER_BASE_URL: ${FILE_BROWSER_BASE_URL:-}
+      FILE_BROWSER_PATH_TEMPLATE: ${FILE_BROWSER_PATH_TEMPLATE:-{base}/{job_rel}}
+      # Output retention (item 15). Cluster = compute, not storage. 0 disables.
+      RETENTION_HOURS: ${RETENTION_HOURS:-168}
+      RETENTION_SWEEP_MINUTES: ${RETENTION_SWEEP_MINUTES:-60}
+    volumes:
+      # ---- Item 7: outputs live OUTSIDE the container ----
+      # Bind-mount the common host data directory into /data. Jobs + results are
+      # written here (jobs/<id>/{input,work,results}) so the file-browser service
+      # and the host see every file, and identical scripts run in both modes.
+      # Set HOST_DATA_DIR to the shared deployment dir on the lab node.
+      - ${HOST_DATA_DIR:-./data}:/data
+      # ---- Item 8: code mounted from outside the image ----
+      # Bind-mount the pipeline scripts and the server app so code/script fixes
+      # ship with a restart (no image rebuild). The image still bakes a copy
+      # (built from these same dirs) so it runs standalone without the mounts;
+      # these mounts simply overlay the baked copy with the live host code.
+      # Rebuild the image only when a DEPENDENCY changes (requirements*.txt).
+      - ./pipeline:/app/pipeline
+      - ./server/app:/app/app
+    restart: unless-stopped
+
+    # ---- Optional GPU ----
+    # BirdNET inference runs on the TFLite interpreter (CPU); enabling a GPU
+    # rarely changes runtime. Uncomment only if you swap in a GPU-delegated
+    # model AND the host has the NVIDIA Container Toolkit installed.
+    # gpus: all
+ 

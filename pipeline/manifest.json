@@ -1,0 +1,177 @@
+[
+  {
+    "id": "birdnet",
+    "name": "BirdNET Species Detection",
+    "script_file": "birdnet_predictions.py",
+    "version": "1.0.0",
+    "description": "Run BirdNET on raw audio: discover + filter WAV files, append detections to the shared aggregate CSV, then write a filtered output CSV for the requested spots/date range.",
+    "inputs": [
+      {
+        "type": "spot_date_range",
+        "label": "Select spots and date range",
+        "valid_extensions": [".wav"]
+      }
+    ],
+    "parameters": [
+      {
+        "id": "snr_db",
+        "label": "SNR for noise removal (dB)",
+        "type": "text",
+        "default": "18"
+      },
+      {
+        "id": "min_confidence",
+        "label": "Minimum detection confidence (0-1)",
+        "type": "text",
+        "default": "0.25"
+      }
+    ],
+    "depends_on": [],
+    "outputs": { "master_csv": "birdnet_results.csv" },
+    "aggregate_file": "birdnet_results.csv",
+    "assets": ["config.py", "file_metadata.py", "static_noise.wav", "rain_noise.wav"]
+  },
+  {
+    "id": "heatmaps",
+    "name": "Species Activity Heatmaps",
+    "script_file": "activity_heatmaps.py",
+    "version": "1.0.0",
+    "description": "Per-spot hourly activity heatmaps (normalized + raw) from the BirdNET aggregate.",
+    "inputs": [
+      { "type": "spot_date_range", "label": "Select spots and date range", "valid_extensions": [".wav"] }
+    ],
+    "parameters": [
+      {
+        "id": "top_n_species",
+        "label": "Top N species to plot",
+        "type": "text",
+        "default": "25"
+      }
+    ],
+    "depends_on": ["birdnet"],
+    "outputs": {},
+    "aggregate_file": "birdnet_results.csv",
+    "assets": ["config.py", "file_metadata.py", "filter_utils.py", "ebird_checklist.txt"]
+  },
+  {
+    "id": "temporal_stickiness",
+    "name": "Activity Regularity (Temporal)",
+    "script_file": "temporal_stickiness.py",
+    "version": "1.0.0",
+    "description": "Spearman correlation of consecutive-day hourly activity vectors per species.",
+    "inputs": [
+      { "type": "spot_date_range", "label": "Select spots and date range", "valid_extensions": [".wav"] }
+    ],
+    "parameters": [
+      {
+        "id": "top_n_temporal",
+        "label": "Top N species to plot",
+        "type": "text",
+        "default": "80"
+      }
+    ],
+    "depends_on": ["birdnet"],
+    "outputs": {},
+    "aggregate_file": "birdnet_results.csv",
+    "assets": ["config.py", "file_metadata.py", "filter_utils.py", "ebird_checklist.txt"]
+  },
+  {
+    "id": "spatial_stickiness",
+    "name": "Habitat Affinity (Spatial)",
+    "script_file": "spatial_stickiness.py",
+    "version": "1.0.0",
+    "description": "Spearman correlation of consecutive-day spatial distribution vectors (requires >=2 spots).",
+    "inputs": [
+      { "type": "spot_date_range", "label": "Select spots and date range", "valid_extensions": [".wav"] }
+    ],
+    "parameters": [],
+    "depends_on": ["birdnet"],
+    "outputs": {},
+    "aggregate_file": "birdnet_results.csv",
+    "assets": ["config.py", "file_metadata.py", "filter_utils.py", "ebird_checklist.txt"]
+  },
+  {
+    "id": "migratory_classification",
+    "name": "Migratory vs Resident",
+    "script_file": "migratory_classification.py",
+    "version": "1.0.0",
+    "description": "Classify species as migratory or resident using SCI + residual kurtosis + PMR.",
+    "inputs": [
+      { "type": "spot_date_range", "label": "Select spots and date range", "valid_extensions": [".wav"] }
+    ],
+    "parameters": [
+      {
+        "id": "sci_threshold",
+        "label": "SCI threshold",
+        "type": "text",
+        "default": "0.9"
+      },
+      {
+        "id": "kurtosis_threshold",
+        "label": "Residual kurtosis threshold",
+        "type": "text",
+        "default": "15"
+      },
+      {
+        "id": "pmr_threshold",
+        "label": "Peak-to-median ratio threshold",
+        "type": "text",
+        "default": "50"
+      },
+      {
+        "id": "window_size",
+        "label": "Rolling window size (days)",
+        "type": "text",
+        "default": "60"
+      }
+    ],
+    "depends_on": ["birdnet"],
+    "outputs": {},
+    "aggregate_file": "birdnet_results.csv",
+    "assets": ["config.py", "file_metadata.py", "filter_utils.py", "ebird_checklist.txt"]
+  },
+  {
+    "id": "solar_correlation",
+    "name": "Solar Event Correlation",
+    "script_file": "solar_correlation.py",
+    "version": "1.0.0",
+    "description": "Pearson correlation between daily peak activity hour and sunrise/sunset.",
+    "inputs": [
+      { "type": "spot_date_range", "label": "Select spots and date range", "valid_extensions": [".wav"] }
+    ],
+    "parameters": [
+      {
+        "id": "min_solar_days",
+        "label": "Min days with >10 detections",
+        "type": "text",
+        "default": "5"
+      }
+    ],
+    "depends_on": ["birdnet"],
+    "outputs": {},
+    "aggregate_file": "birdnet_results.csv",
+    "assets": ["config.py", "file_metadata.py", "filter_utils.py", "ebird_checklist.txt"]
+  },
+  {
+    "id": "daily_timeseries",
+    "name": "Daily Call Time Series",
+    "script_file": "daily_call_timeseries.py",
+    "version": "1.0.0",
+    "description": "Per-species daily call-count plots plus a data-availability heatmap.",
+    "inputs": [
+      { "type": "spot_date_range", "label": "Select spots and date range", "valid_extensions": [".wav"] }
+    ],
+    "parameters": [
+      {
+        "id": "max_timeseries_species",
+        "label": "Max species to plot",
+        "type": "text",
+        "default": "50"
+      }
+    ],
+    "depends_on": ["birdnet"],
+    "outputs": {},
+    "aggregate_file": "birdnet_results.csv",
+    "assets": ["config.py", "file_metadata.py", "filter_utils.py", "ebird_checklist.txt"]
+  }
+]

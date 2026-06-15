@@ -1,0 +1,35 @@
+# Run the published image straight from DockerHub — no source checkout needed.
+#
+#   1. Put this file + a .env in an empty folder.
+#   2. docker compose -f docker-compose.hub.yml up -d
+#
+# The image already bakes the pipeline + server code, so (unlike the dev
+# docker-compose.yml) this file does NOT bind-mount ./pipeline or ./server/app.
+# Only the host data directory is mounted, so your jobs/results survive
+# restarts and are visible on the host.
+services:
+  api:
+    image: hridayansh/cem-bioacoustics:1.1.0
+    container_name: cem-bioacoustics-api
+    ports:
+      - "8000:8000"
+    environment:
+      API_KEY: ${API_KEY:-changeme}
+      REQUIRE_AUTH: ${REQUIRE_AUTH:-true}
+      MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-2048}
+      MAX_CONCURRENT_TASKS: ${MAX_CONCURRENT_TASKS:-2}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-*}
+      BIRDNET_MAX_WORKERS: ${BIRDNET_MAX_WORKERS:-2}
+      API_VERSION: ${API_VERSION:-1.1.0}
+      STAC_ENABLED: ${STAC_ENABLED:-true}
+      STAC_COLLECTION: ${STAC_COLLECTION:-cem-bioacoustics}
+      STAC_ASSET_BASE_URL: ${STAC_ASSET_BASE_URL:-}
+      FILE_BROWSER_BASE_URL: ${FILE_BROWSER_BASE_URL:-}
+      FILE_BROWSER_PATH_TEMPLATE: ${FILE_BROWSER_PATH_TEMPLATE:-{base}/{job_rel}}
+      RETENTION_HOURS: ${RETENTION_HOURS:-168}
+      RETENTION_SWEEP_MINUTES: ${RETENTION_SWEEP_MINUTES:-60}
+    volumes:
+      # Jobs + results land here on the host. Set HOST_DATA_DIR for a shared
+      # deployment dir (e.g. /srv/cem/data); defaults to ./data next to this file.
+      - ${HOST_DATA_DIR:-./data}:/data
+    restart: unless-stopped
