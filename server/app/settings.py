@@ -66,14 +66,18 @@ class Settings:
     RETENTION_SWEEP_MINUTES: float = float(os.environ.get("RETENTION_SWEEP_MINUTES", "60"))
 
     # --- STACD / Airflow integration (synchronous algorithm API) ---
-    # The STACD/Airflow path uses ONE persistent "registered" workspace (a fixed
-    # job dir) instead of the per-job isolation the async API uses: audio is
-    # always uploaded into this workspace's audio dir, BirdNET accumulates its
-    # aggregate here, and analyses read it. This workspace is EXEMPT from the
-    # retention sweeper (it is the registered dataset, not a transient job).
-    STACD_WORKSPACE_ID: str = os.environ.get("STACD_WORKSPACE_ID", "registered")
+    # The front-end uploads audio directly (POST /api/v1/datasets/audio); the
+    # server mints a fresh per-job workspace (data/<job_id>/) and returns the
+    # job_id. Airflow then runs each algorithm against that job
+    # (POST /api/v1/jobs/{job_id}/{algo}). Per-job dirs are swept by retention.
+    #
+    # Optional pin: if STACD_WORKSPACE_ID is set to a non-empty name, a job dir
+    # by that exact name is EXEMPT from the retention sweeper (use it if you want
+    # one long-lived "registered" dataset that accumulates across runs). Empty by
+    # default — nothing is exempt.
+    STACD_WORKSPACE_ID: str = os.environ.get("STACD_WORKSPACE_ID", "")
     # STAC version emitted in the synchronous /api/v1 responses (STACD/CoreStack
-    # catalog uses 1.1.0). The async sidecars stay on their own version.
+    # catalog uses 1.1.0).
     STACD_STAC_VERSION: str = os.environ.get("STACD_STAC_VERSION", "1.1.0")
     # Prefix for the deterministic asset_id STACD registers per output.
     STACD_ASSET_ID_PREFIX: str = os.environ.get("STACD_ASSET_ID_PREFIX", "cem/bioacoustics")

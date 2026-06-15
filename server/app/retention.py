@@ -1,5 +1,5 @@
 """
-Output retention cleanup (item 15).
+Output retention cleanup.
 
 The cluster is compute, not long-term storage. Job directories under
 <DATA_DIR>/jobs/ older than RETENTION_HOURS are deleted. Long-term copies live
@@ -47,9 +47,9 @@ def sweep_once(retention_hours: float | None = None) -> list[str]:
     for job_dir in jobs_dir.iterdir():
         if not job_dir.is_dir():
             continue
-        # Never sweep the STACD registered workspace — it is the persistent
-        # dataset (audio + accumulated aggregate), not a transient job.
-        if job_dir.name == s.STACD_WORKSPACE_ID:
+        # Optionally exempt one pinned "registered" workspace (STACD_WORKSPACE_ID).
+        # Empty by default -> nothing is exempt, every per-job dir is swept.
+        if s.STACD_WORKSPACE_ID and job_dir.name == s.STACD_WORKSPACE_ID:
             continue
         try:
             if _newest_mtime(job_dir) < cutoff:
