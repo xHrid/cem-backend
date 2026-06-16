@@ -195,7 +195,8 @@ def _parse_params(p: dict, step: str | None = None) -> tuple[dict, list]:
         rp["snr_db"] = p["snr_db"]
     for k in ("min_confidence", "top_n_species", "top_n_temporal",
               "sci_threshold", "kurtosis_threshold", "pmr_threshold",
-              "window_size", "min_solar_days", "max_timeseries_species"):
+              "window_size", "min_solar_days", "max_timeseries_species",
+              "filter_confidence", "filter_min_detections"):
         if p.get(k) not in (None, ""):
             rp[k] = p[k]
     geo = p.get("spots_geo") or []
@@ -397,6 +398,8 @@ _BODY_EXAMPLE = {
     "window_size": 60,
     "min_solar_days": 5,
     "max_timeseries_species": 50,
+    "filter_confidence": 0.3,
+    "filter_min_detections": 10,
     "spots_geo": [{"name": "04213SPOT1", "lat": 28.5635, "lon": 77.1897}],
 }
 

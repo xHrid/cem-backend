@@ -46,6 +46,18 @@
         "label": "Top N species to plot",
         "type": "text",
         "default": "25"
+      },
+      {
+        "id": "filter_confidence",
+        "label": "Min detection confidence",
+        "type": "text",
+        "default": "0.3"
+      },
+      {
+        "id": "filter_min_detections",
+        "label": "Min detections per species",
+        "type": "text",
+        "default": "10"
       }
     ],
     "depends_on": ["birdnet"],
@@ -68,6 +80,18 @@
         "label": "Top N species to plot",
         "type": "text",
         "default": "80"
+      },
+      {
+        "id": "filter_confidence",
+        "label": "Min detection confidence",
+        "type": "text",
+        "default": "0.3"
+      },
+      {
+        "id": "filter_min_detections",
+        "label": "Min detections per species",
+        "type": "text",
+        "default": "10"
       }
     ],
     "depends_on": ["birdnet"],
@@ -84,7 +108,20 @@
     "inputs": [
       { "type": "spot_date_range", "label": "Select spots and date range", "valid_extensions": [".wav"] }
     ],
-    "parameters": [],
+    "parameters": [
+      {
+        "id": "filter_confidence",
+        "label": "Min detection confidence",
+        "type": "text",
+        "default": "0.3"
+      },
+      {
+        "id": "filter_min_detections",
+        "label": "Min detections per species",
+        "type": "text",
+        "default": "10"
+      }
+    ],
     "depends_on": ["birdnet"],
     "outputs": {},
     "aggregate_file": "birdnet_results.csv",
@@ -123,6 +160,18 @@
         "label": "Rolling window size (days)",
         "type": "text",
         "default": "60"
+      },
+      {
+        "id": "filter_confidence",
+        "label": "Min detection confidence",
+        "type": "text",
+        "default": "0.3"
+      },
+      {
+        "id": "filter_min_detections",
+        "label": "Min detections per species",
+        "type": "text",
+        "default": "10"
       }
     ],
     "depends_on": ["birdnet"],
@@ -145,6 +194,18 @@
         "label": "Min days with >10 detections",
         "type": "text",
         "default": "5"
+      },
+      {
+        "id": "filter_confidence",
+        "label": "Min detection confidence",
+        "type": "text",
+        "default": "0.3"
+      },
+      {
+        "id": "filter_min_detections",
+        "label": "Min detections per species",
+        "type": "text",
+        "default": "10"
       }
     ],
     "depends_on": ["birdnet"],
@@ -167,6 +228,18 @@
         "label": "Max species to plot",
         "type": "text",
         "default": "50"
+      },
+      {
+        "id": "filter_confidence",
+        "label": "Min detection confidence",
+        "type": "text",
+        "default": "0.3"
+      },
+      {
+        "id": "filter_min_detections",
+        "label": "Min detections per species",
+        "type": "text",
+        "default": "10"
       }
     ],
     "depends_on": ["birdnet"],

@@ -45,6 +45,13 @@ class RunParams(BaseModel):
     max_timeseries_species: Optional[int] = Field(
         default=None, description="Max species to plot. daily_timeseries step only."
     )
+    # --- Shared filter_utils tunables (all 6 analysis steps) ---
+    filter_confidence: Optional[float] = Field(
+        default=None, description="Min detection confidence for 3-step filter (default 0.3). All analysis steps."
+    )
+    filter_min_detections: Optional[int] = Field(
+        default=None, description="Min total detections per species for 3-step filter (default 10). All analysis steps."
+    )
     spots_geo: Optional[list[dict]] = Field(
         default=None,
         description="Spot geolocation for STAC items: [{name, lat, lon}, ...]. "

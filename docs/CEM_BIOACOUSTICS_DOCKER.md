@@ -80,7 +80,7 @@ recommended — BirdNET loads TensorFlow per worker).
 ### 3.1 Build and run
 
 ```bash
-cd cem-scripts-new
+cd cem-backend
 
 # 1. Create the shared data dir the container writes to (bind mount).
 mkdir -p data
@@ -498,7 +498,7 @@ Demo it locally by pointing any file browser at the same shared data dir:
 
 ```bash
 docker run -d --name cem-files -p 8081:80 \
-  -v /absolute/path/to/cem-scripts-new/data:/srv \
+  -v /absolute/path/to/cem-backend/data:/srv \
   filebrowser/filebrowser
 # .env:  FILE_BROWSER_BASE_URL=http://localhost:8081/files
 ```

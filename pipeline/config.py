@@ -65,6 +65,10 @@ LOCATION_NAME:      str   = "Sanjay Van"
 # BirdNET
 MIN_CONFIDENCE:     float = 0.25
 
+# Shared filter thresholds (filter_utils 3-step filter, all analysis scripts)
+FILTER_CONFIDENCE:     float = 0.3    # step 2: min detection confidence
+FILTER_MIN_DETECTIONS: int   = 10     # step 3: min total detections per species
+
 # Analysis thresholds
 TOP_N_SPECIES:      int   = 25     # 02_heatmaps
 TOP_N_TEMPORAL:     int   = 80     # 03_temporal
@@ -102,6 +106,8 @@ SPECIES_TO_PLOT:    list[str] | None = None  # 09_timeseries (None = top N)
 #
 # Per-step algorithm tunables (all optional; each read by exactly one step):
 #   --min-confidence FLOAT       -> MIN_CONFIDENCE        (birdnet)
+#   --filter-confidence FLOAT    -> FILTER_CONFIDENCE     (all analysis scripts)
+#   --filter-min-detections INT  -> FILTER_MIN_DETECTIONS (all analysis scripts)
 #   --top-n-species INT          -> TOP_N_SPECIES         (heatmaps)
 #   --top-n-temporal INT         -> TOP_N_TEMPORAL        (temporal_stickiness)
 #   --sci-threshold FLOAT        -> SCI_THRESHOLD         (migratory)
@@ -130,6 +136,8 @@ def apply_overrides(argv=None) -> None:
     p.add_argument("--snr-db", default=None)
     # Per-step algorithm tunables (each consumed by exactly one script).
     p.add_argument("--min-confidence", default=None)
+    p.add_argument("--filter-confidence", default=None)
+    p.add_argument("--filter-min-detections", default=None)
     p.add_argument("--top-n-species", default=None)
     p.add_argument("--top-n-temporal", default=None)
     p.add_argument("--sci-threshold", default=None)
@@ -157,6 +165,8 @@ def apply_overrides(argv=None) -> None:
     # Per-step algorithm tunables. Use `is not None` (0 / 0.0 are valid) and
     # cast ints via int(float(x)) so "60" and "60.0" both parse.
     if args.min_confidence is not None:        g["MIN_CONFIDENCE"] = float(args.min_confidence)
+    if args.filter_confidence is not None:     g["FILTER_CONFIDENCE"] = float(args.filter_confidence)
+    if args.filter_min_detections is not None: g["FILTER_MIN_DETECTIONS"] = int(float(args.filter_min_detections))
     if args.top_n_species is not None:         g["TOP_N_SPECIES"] = int(float(args.top_n_species))
     if args.top_n_temporal is not None:        g["TOP_N_TEMPORAL"] = int(float(args.top_n_temporal))
     if args.sci_threshold is not None:         g["SCI_THRESHOLD"] = float(args.sci_threshold)

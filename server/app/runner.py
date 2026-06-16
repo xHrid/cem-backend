@@ -52,18 +52,26 @@ def _common_filter_flags(params: dict) -> list[str]:
 # by exactly one script; forwarded only when present in the run params (so the
 # script keeps its config.py default otherwise). snr_db is handled inline above
 # for parity with the original birdnet wiring.
+# Shared filter tunables forwarded to every analysis step (filter_utils 3-step).
+_SHARED_FILTER_TUNABLES: dict[str, str] = {
+    "filter_confidence": "--filter-confidence",
+    "filter_min_detections": "--filter-min-detections",
+}
+
 _STEP_TUNABLES: dict[str, dict[str, str]] = {
     "birdnet": {"min_confidence": "--min-confidence"},
-    "heatmaps": {"top_n_species": "--top-n-species"},
-    "temporal_stickiness": {"top_n_temporal": "--top-n-temporal"},
+    "heatmaps": {"top_n_species": "--top-n-species", **_SHARED_FILTER_TUNABLES},
+    "temporal_stickiness": {"top_n_temporal": "--top-n-temporal", **_SHARED_FILTER_TUNABLES},
+    "spatial_stickiness": {**_SHARED_FILTER_TUNABLES},
     "migratory_classification": {
         "sci_threshold": "--sci-threshold",
         "kurtosis_threshold": "--kurtosis-threshold",
         "pmr_threshold": "--pmr-threshold",
         "window_size": "--window-size",
+        **_SHARED_FILTER_TUNABLES,
     },
-    "solar_correlation": {"min_solar_days": "--min-solar-days"},
-    "daily_timeseries": {"max_timeseries_species": "--max-timeseries-species"},
+    "solar_correlation": {"min_solar_days": "--min-solar-days", **_SHARED_FILTER_TUNABLES},
+    "daily_timeseries": {"max_timeseries_species": "--max-timeseries-species", **_SHARED_FILTER_TUNABLES},
 }
 
 

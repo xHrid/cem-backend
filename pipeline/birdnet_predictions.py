@@ -303,7 +303,7 @@ def write_output_csv(aggregate_path, output_path, input_directories, date_start,
         return
 
     df.to_csv(output_path, index=False)
-    print(f"Output: {len(df)} detections → {output_path}")
+    print(f"Output: {len(df)} detections -> {output_path}")
 
 
 # =============================================================================

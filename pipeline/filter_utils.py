@@ -20,16 +20,20 @@ def filter_detections(
     date_start: date | None = None,
     date_end: date | None = None,
     spot_names: list[str] | None = None,
+    filter_confidence: float = 0.3,
+    filter_min_detections: int = 10,
 ) -> pd.DataFrame:
-    """Load aggregate CSV → preprocess → 3-step filter → date/spot filter.
+    """Load aggregate CSV -> preprocess -> 3-step filter -> date/spot filter.
 
     Parameters
     ----------
-    aggregate_path : path to aggregate CSV
-    ebird_file     : path to eBird checklist (one line per species: "sci_name_CommonName")
-    date_start     : inclusive start date (None = no lower bound)
-    date_end       : inclusive end date (None = no upper bound)
-    spot_names     : list of spot names to keep (empty/None = all)
+    aggregate_path       : path to aggregate CSV
+    ebird_file           : path to eBird checklist (one line per species: "sci_name_CommonName")
+    date_start           : inclusive start date (None = no lower bound)
+    date_end             : inclusive end date (None = no upper bound)
+    spot_names           : list of spot names to keep (empty/None = all)
+    filter_confidence    : minimum detection confidence for step 2 (default 0.3)
+    filter_min_detections: minimum total detections per species for step 3 (default 10)
 
     Returns
     -------
@@ -64,21 +68,21 @@ def filter_detections(
             valid_birds = [line.strip().split("_")[1] for line in f if "_" in line.strip()]
         before = df["common_name"].nunique()
         df = df[df["common_name"].isin(valid_birds)].copy()
-        print(f"Step 1 (eBird): {before} → {df['common_name'].nunique()} species")
+        print(f"Step 1 (eBird): {before} -> {df['common_name'].nunique()} species")
     else:
         print("Step 1 (eBird): skipped (no checklist file)")
 
-    # -- Step 2: Confidence >= 0.3 --
+    # -- Step 2: Confidence threshold --
     before = len(df)
-    df = df[df["confidence"] >= 0.3].copy()
-    print(f"Step 2 (confidence): {before} → {len(df)} detections")
+    df = df[df["confidence"] >= filter_confidence].copy()
+    print(f"Step 2 (confidence >= {filter_confidence}): {before} -> {len(df)} detections")
 
-    # -- Step 3: Minimum 10 detections per species --
+    # -- Step 3: Minimum detections per species --
     counts = df.groupby("common_name").size()
-    valid = counts[counts >= 10].index
+    valid = counts[counts >= filter_min_detections].index
     before_sp = df["common_name"].nunique()
     df = df[df["common_name"].isin(valid)].copy()
-    print(f"Step 3 (min 10): {before_sp} → {df['common_name'].nunique()} species")
+    print(f"Step 3 (min {filter_min_detections}): {before_sp} -> {df['common_name'].nunique()} species")
 
     # -- Date range filter --
     if date_start is not None:

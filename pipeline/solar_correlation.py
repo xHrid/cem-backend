@@ -117,6 +117,8 @@ def main():
     df = filter_detections(
         cfg.AGGREGATE_FILE, cfg.EBIRD_FILE,
         cfg.DATE_START, cfg.DATE_END, cfg.SPOT_NAMES,
+        filter_confidence=cfg.FILTER_CONFIDENCE,
+        filter_min_detections=cfg.FILTER_MIN_DETECTIONS,
     )
     if df.empty:
         print("ERROR: No data after filtering.")
