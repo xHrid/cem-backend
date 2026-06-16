@@ -7,6 +7,7 @@ name: CEM Bioacoustics (BirdNET + ecological analyses)
 version: 1.0
 description: "BirdNET species detection over registered field audio, then six ecological analyses."
 params:
+  - job_id                   # required — passed in request body to every algorithm endpoint
   - spots                    # comma-separated spot names, or omit for all
   - start_date               # YYYYMMDD or YYYY-MM-DD
   - end_date                 # YYYYMMDD or YYYY-MM-DD
@@ -95,6 +96,8 @@ id: BirdNET
 name: BirdNET
 description: "Detect species in the registered audio; append to the aggregate."
 params:
+  - name: job_id
+    type: string
   - name: spots
     type: string
   - name: start_date
@@ -117,6 +120,8 @@ id: Heatmaps
 name: Heatmaps
 description: "Per-spot hourly activity heatmaps from the aggregate."
 params:
+  - name: job_id
+    type: string
   - name: spots
     type: string
   - name: start_date
@@ -137,6 +142,8 @@ id: TemporalStickiness
 name: TemporalStickiness
 description: "Consecutive-day temporal activity correlation."
 params:
+  - name: job_id
+    type: string
   - name: spots
     type: string
   - name: start_date
@@ -157,6 +164,8 @@ id: SpatialStickiness
 name: SpatialStickiness
 description: "Consecutive-day spatial distribution correlation (>=2 spots)."
 params:
+  - name: job_id
+    type: string
   - name: spots
     type: string
   - name: start_date
@@ -175,6 +184,8 @@ id: MigratoryClassification
 name: MigratoryClassification
 description: "Classify species migratory vs resident."
 params:
+  - name: job_id
+    type: string
   - name: spots
     type: string
   - name: start_date
@@ -201,6 +212,8 @@ id: SolarCorrelation
 name: SolarCorrelation
 description: "Correlate daily peak activity with sunrise/sunset."
 params:
+  - name: job_id
+    type: string
   - name: spots
     type: string
   - name: start_date
@@ -221,6 +234,8 @@ id: DailyTimeseries
 name: DailyTimeseries
 description: "Per-species daily call-count time series."
 params:
+  - name: job_id
+    type: string
   - name: spots
     type: string
   - name: start_date

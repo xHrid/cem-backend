@@ -9,7 +9,7 @@
 # restarts and are visible on the host.
 services:
   api:
-    image: hridayansh/cem-bioacoustics:1.1.0
+    image: hridayansh/cem-bioacoustics:1.2.0
     container_name: cem-bioacoustics-api
     ports:
       - "8000:8000"

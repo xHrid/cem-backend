@@ -1,7 +1,8 @@
 # STACD Algorithm Repo — how each CEM bioacoustics algorithm is executed.
-# Each node calls this docker's SYNCHRONOUS endpoint POST /api/v1/<algo>, which
-# blocks until the step finishes and returns 200 + {asset_id, stac} (or
-# 400/404/500 per the STACD response contract).
+# Each node calls this docker's SYNCHRONOUS endpoint POST /api/v1/jobs/<algo>
+# with job_id in the JSON request body.  The endpoint blocks until the step
+# finishes and returns 200 + {asset_id, stac} (or 400/404/500 per the STACD
+# response contract).
 #
 # Replace the host in every `url` with the docker's reachable address — the
 # NGINX route in production, or the ngrok/tunnel URL while testing.
@@ -17,7 +18,7 @@ execution_modes:
   api:
     enabled: true
     priority: 1
-    url: "http://cem-bioacoustics:8000/api/v1/birdnet"
+    url: "http://cem-bioacoustics:8000/api/v1/jobs/birdnet"
 
 --- !Algorithm_Instance
 type: Heatmaps
@@ -29,7 +30,7 @@ execution_modes:
   api:
     enabled: true
     priority: 1
-    url: "http://cem-bioacoustics:8000/api/v1/heatmaps"
+    url: "http://cem-bioacoustics:8000/api/v1/jobs/heatmaps"
 
 --- !Algorithm_Instance
 type: TemporalStickiness
@@ -41,7 +42,7 @@ execution_modes:
   api:
     enabled: true
     priority: 1
-    url: "http://cem-bioacoustics:8000/api/v1/temporal_stickiness"
+    url: "http://cem-bioacoustics:8000/api/v1/jobs/temporal_stickiness"
 
 --- !Algorithm_Instance
 type: SpatialStickiness
@@ -53,7 +54,7 @@ execution_modes:
   api:
     enabled: true
     priority: 1
-    url: "http://cem-bioacoustics:8000/api/v1/spatial_stickiness"
+    url: "http://cem-bioacoustics:8000/api/v1/jobs/spatial_stickiness"
 
 --- !Algorithm_Instance
 type: MigratoryClassification
@@ -65,7 +66,7 @@ execution_modes:
   api:
     enabled: true
     priority: 1
-    url: "http://cem-bioacoustics:8000/api/v1/migratory_classification"
+    url: "http://cem-bioacoustics:8000/api/v1/jobs/migratory_classification"
 
 --- !Algorithm_Instance
 type: SolarCorrelation
@@ -77,7 +78,7 @@ execution_modes:
   api:
     enabled: true
     priority: 1
-    url: "http://cem-bioacoustics:8000/api/v1/solar_correlation"
+    url: "http://cem-bioacoustics:8000/api/v1/jobs/solar_correlation"
 
 --- !Algorithm_Instance
 type: DailyTimeseries
@@ -89,4 +90,4 @@ execution_modes:
   api:
     enabled: true
     priority: 1
-    url: "http://cem-bioacoustics:8000/api/v1/daily_timeseries"
+    url: "http://cem-bioacoustics:8000/api/v1/jobs/daily_timeseries"
