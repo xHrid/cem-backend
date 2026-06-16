@@ -5,7 +5,8 @@ Flow:
   1. Front-end uploads audio directly:  POST /api/v1/datasets/audio  -> job_id
      (WAVs saved under data/<job_id>/input/audio/).
   2. Front-end hands job_id to Airflow. Airflow runs each DAG node by calling
-     POST /api/v1/jobs/{job_id}/{algo} and BLOCKS on the response (synchronous).
+     POST /api/v1/jobs/{algo} with job_id in the request body, and BLOCKS on
+     the response (synchronous).
   3. Results are returned inline (STAC items) and can be fetched via the
      read-only /api/v1/jobs/{job_id}/... endpoints.
 

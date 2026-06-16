@@ -6,24 +6,26 @@ Model:
     That call mints a fresh job_id, saves the WAVs under
     data/<job_id>/input/audio/, and returns the job_id.
   * The front-end hands that job_id to an Airflow layer. Airflow runs each DAG
-    node by calling ONE algorithm endpoint
-        POST /api/v1/jobs/{job_id}/{algo}
-    and BLOCKS until it returns — the HTTP response IS the completion signal
-    (synchronous; no polling).
+    node by calling ONE algorithm endpoint with a STATIC URL:
+        POST /api/v1/jobs/{algo}
+    passing ``job_id`` inside the JSON request body.  Airflow BLOCKS until the
+    response arrives — the HTTP response IS the completion signal (synchronous;
+    no polling).
   * Each pipeline step is one algorithm node. SEVEN explicit named wrappers, one
     per algorithm, plus a generic fallback:
 
-        POST /api/v1/jobs/{job_id}/birdnet
-        POST /api/v1/jobs/{job_id}/heatmaps
-        POST /api/v1/jobs/{job_id}/temporal_stickiness
-        POST /api/v1/jobs/{job_id}/spatial_stickiness
-        POST /api/v1/jobs/{job_id}/migratory_classification
-        POST /api/v1/jobs/{job_id}/solar_correlation
-        POST /api/v1/jobs/{job_id}/daily_timeseries
-        POST /api/v1/jobs/{job_id}/{algo}      (generic, registered last)
+        POST /api/v1/jobs/birdnet          body: {"job_id": "..."}
+        POST /api/v1/jobs/heatmaps         body: {"job_id": "..."}
+        POST /api/v1/jobs/temporal_stickiness
+        POST /api/v1/jobs/spatial_stickiness
+        POST /api/v1/jobs/migratory_classification
+        POST /api/v1/jobs/solar_correlation
+        POST /api/v1/jobs/daily_timeseries
+        POST /api/v1/jobs/{algo}           (generic, registered last)
 
     birdnet reads the job's audio dir and appends to the job's aggregate; the six
-    analyses read that aggregate.
+    analyses read that aggregate.  All endpoints receive ``job_id`` in the
+    request body so Airflow can use a single static URL template.
 
 Responses match the STACD contract:
     200 -> {status, Success, message, task_id, asset_id[, asset_ids], stac}
@@ -32,7 +34,7 @@ Responses match the STACD contract:
     500 -> pipeline failure  (failed)        {status, error, message, task_id}
 
 Read-only endpoints (job summary, results, logs, downloads) are kept for
-debugging and result retrieval; they live under the same /api/v1/jobs/{job_id}.
+debugging and result retrieval; they live under /api/v1/jobs/{job_id}.
 """
 import os
 import uuid
@@ -129,7 +131,7 @@ def upload_audio(files: list[UploadFile] = File(...)):
     """Create a fresh job and upload WAVs into data/<job_id>/input/audio/.
 
     Returns the minted job_id; the front-end hands this to Airflow, which then
-    calls POST /api/v1/jobs/{job_id}/{algo}."""
+    calls POST /api/v1/jobs/{algo} with job_id in the request body."""
     if not files:
         raise HTTPException(400, "No files provided.")
     job = jobstore.create_job()
@@ -227,13 +229,18 @@ def _browse_href(job: jobstore.Job, rel: str) -> Optional[str]:
 # --------------------------------------------------------------------------- #
 # Shared synchronous core (behind every algorithm wrapper)
 # --------------------------------------------------------------------------- #
-def _run_algorithm_sync(job_id: str, algo: str, params: dict | None):
+def _run_algorithm_sync(algo: str, params: dict | None):
     """Run one algorithm node on one job to completion; return the STACD response.
 
-    Blocking — the returned value IS the completion signal Airflow waits on."""
+    ``job_id`` is extracted from the request body (``params``).  Blocking — the
+    returned value IS the completion signal Airflow waits on."""
     if not meta.is_valid_step(algo):
         raise HTTPException(404, f"Unknown algorithm '{algo}'. One of: {list(meta.SCRIPTS)}")
 
+    body = params or {}
+    job_id = body.get("job_id")
+    if not job_id:
+        raise HTTPException(400, "Missing required field 'job_id' in request body.")
     job = _require_job(job_id)
     run_params, geo, audio_spots = _parse_params(params or {}, step=algo)
     if geo:
@@ -389,6 +396,7 @@ def _responses_for(algo: str, name: str) -> dict:
 # Request-body example shown in Swagger (same body for every wrapper; each algo
 # only reads its own tunables).
 _BODY_EXAMPLE = {
+    "job_id": "job_abc123",
     "spots": "04213SPOT1,71301SPOT2",
     "start_date": "20251101",
     "end_date": "20251231",
@@ -409,71 +417,78 @@ _BODY_EXAMPLE = {
 
 
 # --------------------------------------------------------------------------- #
-# Algorithm wrappers (synchronous) — SEVEN explicit named routes, per job.
-# Registered before the generic fallback so the named path always wins.
+# Algorithm wrappers (synchronous) — SEVEN explicit named routes (static URLs).
+# job_id comes from the request body.  Registered before the generic fallback.
 # --------------------------------------------------------------------------- #
-@router.post("/jobs/{job_id}/birdnet",
+@router.post("/jobs/birdnet",
              responses=_responses_for("birdnet", "BirdNET Species Detection"),
              summary="BirdNET species detection (synchronous)")
-def run_birdnet_sync(job_id: str, params: dict = Body(default=None, examples=[_BODY_EXAMPLE])):
+def run_birdnet_sync(params: dict = Body(default=None, examples=[_BODY_EXAMPLE])):
     """Run BirdNET over the job's uploaded audio to completion, append detections
-    to the job aggregate, and return the STACD asset response. Reads tunables
-    `snr_db`, `min_confidence`. Needs audio uploaded for this job first."""
-    return _run_algorithm_sync(job_id, "birdnet", params)
+    to the job aggregate, and return the STACD asset response.  ``job_id`` must
+    be supplied in the request body.  Reads tunables `snr_db`, `min_confidence`.
+    Needs audio uploaded for this job first."""
+    return _run_algorithm_sync("birdnet", params)
 
 
-@router.post("/jobs/{job_id}/heatmaps",
+@router.post("/jobs/heatmaps",
              responses=_responses_for("heatmaps", "Species Activity Heatmaps"),
              summary="Species activity heatmaps (synchronous)")
-def run_heatmaps_sync(job_id: str, params: dict = Body(default=None, examples=[_BODY_EXAMPLE])):
-    """Per-spot hourly activity heatmaps from the aggregate. Reads tunable
-    `top_n_species`. Needs the BirdNET aggregate."""
-    return _run_algorithm_sync(job_id, "heatmaps", params)
+def run_heatmaps_sync(params: dict = Body(default=None, examples=[_BODY_EXAMPLE])):
+    """Per-spot hourly activity heatmaps from the aggregate.  ``job_id`` must be
+    supplied in the request body.  Reads tunable `top_n_species`.  Needs the
+    BirdNET aggregate."""
+    return _run_algorithm_sync("heatmaps", params)
 
 
-@router.post("/jobs/{job_id}/temporal_stickiness",
+@router.post("/jobs/temporal_stickiness",
              responses=_responses_for("temporal_stickiness", "Activity Regularity (Temporal)"),
              summary="Temporal stickiness (synchronous)")
-def run_temporal_stickiness_sync(job_id: str, params: dict = Body(default=None, examples=[_BODY_EXAMPLE])):
-    """Consecutive-day temporal activity correlation per species. Reads tunable
-    `top_n_temporal`. Needs the BirdNET aggregate."""
-    return _run_algorithm_sync(job_id, "temporal_stickiness", params)
+def run_temporal_stickiness_sync(params: dict = Body(default=None, examples=[_BODY_EXAMPLE])):
+    """Consecutive-day temporal activity correlation per species.  ``job_id``
+    must be supplied in the request body.  Reads tunable `top_n_temporal`.
+    Needs the BirdNET aggregate."""
+    return _run_algorithm_sync("temporal_stickiness", params)
 
 
-@router.post("/jobs/{job_id}/spatial_stickiness",
+@router.post("/jobs/spatial_stickiness",
              responses=_responses_for("spatial_stickiness", "Habitat Affinity (Spatial)"),
              summary="Spatial stickiness (synchronous)")
-def run_spatial_stickiness_sync(job_id: str, params: dict = Body(default=None, examples=[_BODY_EXAMPLE])):
-    """Consecutive-day spatial distribution correlation. Needs the BirdNET
-    aggregate with >=2 spots (returns 404-skip otherwise)."""
-    return _run_algorithm_sync(job_id, "spatial_stickiness", params)
+def run_spatial_stickiness_sync(params: dict = Body(default=None, examples=[_BODY_EXAMPLE])):
+    """Consecutive-day spatial distribution correlation.  ``job_id`` must be
+    supplied in the request body.  Needs the BirdNET aggregate with >=2 spots
+    (returns 404-skip otherwise)."""
+    return _run_algorithm_sync("spatial_stickiness", params)
 
 
-@router.post("/jobs/{job_id}/migratory_classification",
+@router.post("/jobs/migratory_classification",
              responses=_responses_for("migratory_classification", "Migratory vs Resident"),
              summary="Migratory vs resident classification (synchronous)")
-def run_migratory_classification_sync(job_id: str, params: dict = Body(default=None, examples=[_BODY_EXAMPLE])):
-    """Classify species migratory vs resident. Reads tunables `sci_threshold`,
-    `kurtosis_threshold`, `pmr_threshold`, `window_size`. Needs the aggregate."""
-    return _run_algorithm_sync(job_id, "migratory_classification", params)
+def run_migratory_classification_sync(params: dict = Body(default=None, examples=[_BODY_EXAMPLE])):
+    """Classify species migratory vs resident.  ``job_id`` must be supplied in
+    the request body.  Reads tunables `sci_threshold`, `kurtosis_threshold`,
+    `pmr_threshold`, `window_size`.  Needs the aggregate."""
+    return _run_algorithm_sync("migratory_classification", params)
 
 
-@router.post("/jobs/{job_id}/solar_correlation",
+@router.post("/jobs/solar_correlation",
              responses=_responses_for("solar_correlation", "Solar Event Correlation"),
              summary="Solar event correlation (synchronous)")
-def run_solar_correlation_sync(job_id: str, params: dict = Body(default=None, examples=[_BODY_EXAMPLE])):
-    """Correlate daily peak activity hour with sunrise/sunset. Reads tunable
-    `min_solar_days`. Needs the BirdNET aggregate."""
-    return _run_algorithm_sync(job_id, "solar_correlation", params)
+def run_solar_correlation_sync(params: dict = Body(default=None, examples=[_BODY_EXAMPLE])):
+    """Correlate daily peak activity hour with sunrise/sunset.  ``job_id`` must
+    be supplied in the request body.  Reads tunable `min_solar_days`.  Needs the
+    BirdNET aggregate."""
+    return _run_algorithm_sync("solar_correlation", params)
 
 
-@router.post("/jobs/{job_id}/daily_timeseries",
+@router.post("/jobs/daily_timeseries",
              responses=_responses_for("daily_timeseries", "Daily Call Time Series"),
              summary="Daily call time series (synchronous)")
-def run_daily_timeseries_sync(job_id: str, params: dict = Body(default=None, examples=[_BODY_EXAMPLE])):
-    """Per-species daily call-count time series + data-availability heatmap. Reads
-    tunable `max_timeseries_species`. Needs the BirdNET aggregate."""
-    return _run_algorithm_sync(job_id, "daily_timeseries", params)
+def run_daily_timeseries_sync(params: dict = Body(default=None, examples=[_BODY_EXAMPLE])):
+    """Per-species daily call-count time series + data-availability heatmap.
+    ``job_id`` must be supplied in the request body.  Reads tunable
+    `max_timeseries_species`.  Needs the BirdNET aggregate."""
+    return _run_algorithm_sync("daily_timeseries", params)
 
 
 # --------------------------------------------------------------------------- #
@@ -571,11 +586,12 @@ def download_file(job_id: str, path: str = Query(..., description="Result path r
 # --------------------------------------------------------------------------- #
 # Generic fallback (registered LAST so the seven named routes match first).
 # --------------------------------------------------------------------------- #
-@router.post("/jobs/{job_id}/{algo}",
+@router.post("/jobs/{algo}",
              responses=_responses_for("solar_correlation", "Algorithm"),
              summary="Run any algorithm synchronously (generic fallback)")
-def run_algorithm(job_id: str, algo: str, params: dict = Body(default=None, examples=[_BODY_EXAMPLE])):
-    """Generic synchronous runner. The seven named routes above are preferred and
-    self-documented; this catch-all keeps the contract working for any valid
-    `algo` id (`birdnet` or one of the six analyses) and for any future step."""
-    return _run_algorithm_sync(job_id, algo, params)
+def run_algorithm(algo: str, params: dict = Body(default=None, examples=[_BODY_EXAMPLE])):
+    """Generic synchronous runner.  ``job_id`` must be supplied in the request
+    body.  The seven named routes above are preferred and self-documented; this
+    catch-all keeps the contract working for any valid `algo` id and for any
+    future step."""
+    return _run_algorithm_sync(algo, params)
