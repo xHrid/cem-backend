@@ -113,17 +113,29 @@ def build_command(job: Job, step: str, params: dict) -> list[str]:
             shutil.copyfile(job.uploaded_processed, job.processed_file)
         cmd += ["--datasets", str(job.audio_dir)]
 
+        # Collect ALL file→spot overrides (references + uploaded audio) into
+        # a single --input-file-list / --input-file-spots pair so BirdNET
+        # writes the UI-selected spot name into the aggregate CSV.
+        all_files, all_spots = [], []
+
         ref_spots = job.get_reference_spots()
         if ref_spots:
-            files, spots = [], []
             for base, spot in ref_spots.items():
                 fp = job.reference_dir / base
                 if fp.is_file():
-                    files.append(str(fp))
-                    spots.append(spot if spot else "_")
-            if files:
-                cmd += ["--input-file-list", *files]
-                cmd += ["--input-file-spots", *spots]
+                    all_files.append(str(fp))
+                    all_spots.append(spot if spot else "_")
+
+        audio_spots = job.get_audio_spots()
+        if audio_spots and job.audio_dir.is_dir():
+            for f in sorted(job.audio_dir.iterdir()):
+                if f.is_file() and f.name in audio_spots:
+                    all_files.append(str(f))
+                    all_spots.append(audio_spots[f.name] or "_")
+
+        if all_files:
+            cmd += ["--input-file-list", *all_files]
+            cmd += ["--input-file-spots", *all_spots]
 
         cmd += ["--aggregate-file", str(job.work_aggregate)]
         cmd += ["--processed-file", str(job.processed_file)]

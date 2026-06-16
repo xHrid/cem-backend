@@ -5,7 +5,8 @@ Layout (<DATA_DIR>/jobs/<job_id>/):
     job.json                 metadata + task records
     input/audio/             uploaded WAV files  (birdnet --datasets)
     input/reference/         reference WAV files (birdnet --input-file-list)
-    input/reference_spots.json   {basename: spot}
+    input/reference_spots.json   {basename: spot}  (reference files)
+    input/audio_spots.json       {basename: spot}  (regular audio files)
     input/aggregate.csv      uploaded aggregate (optional)
     input/ebird_checklist.txt, static_noise.wav, rain_noise.wav  (optional overrides)
     work/aggregate.csv       birdnet-produced aggregate
@@ -49,6 +50,8 @@ class Job:
     def reference_dir(self) -> Path: return self.input_dir / "reference"
     @property
     def reference_spots_path(self) -> Path: return self.input_dir / "reference_spots.json"
+    @property
+    def audio_spots_path(self) -> Path: return self.input_dir / "audio_spots.json"
     @property
     def geo_path(self) -> Path: return self.input_dir / "geo.json"
     @property
@@ -120,6 +123,18 @@ class Job:
             m = self.get_reference_spots()
             m[basename] = spot or ""
             self.reference_spots_path.write_text(json.dumps(m, indent=2))
+
+    # ---- audio spot map (all uploaded audio files) ----
+    def get_audio_spots(self) -> dict:
+        """Return {basename: spot_name} for uploaded audio files."""
+        if self.audio_spots_path.is_file():
+            return json.loads(self.audio_spots_path.read_text())
+        return {}
+
+    def set_audio_spots(self, mapping: dict) -> None:
+        with _LOCK:
+            self.input_dir.mkdir(parents=True, exist_ok=True)
+            self.audio_spots_path.write_text(json.dumps(mapping, indent=2))
 
     # ---- spot geolocation (for STAC items, item 9) ----
     def get_geo(self) -> list:

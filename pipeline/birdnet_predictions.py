@@ -323,12 +323,32 @@ def main():
     # Map reference-file basename -> attached spot (aligned INPUT_FILE_LIST/SPOTS).
     spot_overrides = {}
     ref_basenames = set()
-    spots_aligned = list(cfg.INPUT_FILE_SPOTS) + [""] * (len(cfg.INPUT_FILE_LIST) - len(cfg.INPUT_FILE_SPOTS))
+    spots_aligned = list(cfg.INPUT_FILE_SPOTS) + [""] * max(0, len(cfg.INPUT_FILE_LIST) - len(cfg.INPUT_FILE_SPOTS))
     for pth, sp in zip(cfg.INPUT_FILE_LIST, spots_aligned):
         base = os.path.basename(os.path.abspath(pth))
         ref_basenames.add(base)
         if sp:
             spot_overrides[base] = sp
+
+    # Map dataset-directory -> spot name (aligned DATASET_SPOTS / INPUT_DIRECTORIES).
+    # Every file discovered inside a mapped directory inherits its spot name,
+    # unless it already has a file-level override from INPUT_FILE_SPOTS above.
+    dir_spot_map = {}
+    if cfg.DATASET_SPOTS:
+        ds_aligned = list(cfg.DATASET_SPOTS) + [""] * max(0, len(cfg.INPUT_DIRECTORIES) - len(cfg.DATASET_SPOTS))
+        for d, s in zip(cfg.INPUT_DIRECTORIES, ds_aligned):
+            if s:
+                dir_spot_map[os.path.abspath(d)] = s
+    if dir_spot_map:
+        for filepath in files_to_process:
+            base = os.path.basename(filepath)
+            if base in spot_overrides:
+                continue   # file-level override takes precedence
+            parent = os.path.dirname(os.path.abspath(filepath))
+            for dir_path, spot_name in dir_spot_map.items():
+                if parent == dir_path or parent.startswith(dir_path + os.sep):
+                    spot_overrides[base] = spot_name
+                    break
 
     run_pipeline(
         file_list=files_to_process,

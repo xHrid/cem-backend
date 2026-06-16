@@ -173,8 +173,9 @@ def upload_override(job_id: str, kind: str, files: list[UploadFile] = File(...))
 # --------------------------------------------------------------------------- #
 # Shared helpers for the algorithm runners
 # --------------------------------------------------------------------------- #
-def _parse_params(p: dict, step: str | None = None) -> tuple[dict, list]:
-    """Pull pipeline params + spot geolocation out of the request body.
+def _parse_params(p: dict, step: str | None = None) -> tuple[dict, list, dict]:
+    """Pull pipeline params + spot geolocation + audio-spot mapping out of the
+    request body.
 
     Airflow sends every DAG param as a string, so ``spots`` may arrive
     comma-separated; normalize to a list. When a tunable is absent from the
@@ -200,7 +201,8 @@ def _parse_params(p: dict, step: str | None = None) -> tuple[dict, list]:
         if p.get(k) not in (None, ""):
             rp[k] = p[k]
     geo = p.get("spots_geo") or []
-    return rp, geo
+    audio_spots = p.get("audio_spots") or {}   # {basename: spot_name}
+    return rp, geo, audio_spots
 
 
 def _classify_error(err: str) -> tuple[int, str]:
@@ -233,9 +235,11 @@ def _run_algorithm_sync(job_id: str, algo: str, params: dict | None):
         raise HTTPException(404, f"Unknown algorithm '{algo}'. One of: {list(meta.SCRIPTS)}")
 
     job = _require_job(job_id)
-    run_params, geo = _parse_params(params or {}, step=algo)
+    run_params, geo, audio_spots = _parse_params(params or {}, step=algo)
     if geo:
         job.set_geo(geo)  # also stamps geometry onto the on-disk sidecars
+    if audio_spots:
+        job.set_audio_spots(audio_spots)
 
     task_id = uuid.uuid4().hex
     task = runner.run_sync(job, algo, run_params)

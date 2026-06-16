@@ -92,7 +92,13 @@ def filter_detections(
 
     # -- Spot filter --
     if spot_names:
-        df = df[df["Spot"].isin([s.lower() for s in spot_names])]
+        lower_names = [s.lower() for s in spot_names]
+        matched = df[df["Spot"].str.lower().isin(lower_names)]
+        if matched.empty and not df.empty:
+            print(f"WARNING: spot filter names {spot_names} matched 0 of "
+                  f"{sorted(df['Spot'].unique())} -> skipping spot filter")
+        else:
+            df = matched
 
     print(f"Final: {len(df)} detections, {df['common_name'].nunique()} species")
     return df
