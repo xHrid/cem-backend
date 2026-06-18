@@ -48,11 +48,7 @@ def _common_filter_flags(params: dict) -> list[str]:
     return flags
 
 
-# Per-step algorithm tunables -> config.apply_overrides() CLI flag. Each is read
-# by exactly one script; forwarded only when present in the run params (so the
-# script keeps its config.py default otherwise). snr_db is handled inline above
-# for parity with the original birdnet wiring.
-# Shared filter tunables forwarded to every analysis step (filter_utils 3-step).
+# Per-step algorithm tunables -> config.apply_overrides() CLI flag.
 _SHARED_FILTER_TUNABLES: dict[str, str] = {
     "filter_confidence": "--filter-confidence",
     "filter_min_detections": "--filter-min-detections",
@@ -60,6 +56,7 @@ _SHARED_FILTER_TUNABLES: dict[str, str] = {
 
 _STEP_TUNABLES: dict[str, dict[str, str]] = {
     "birdnet": {"min_confidence": "--min-confidence"},
+    "acoustic_indices": {},
     "heatmaps": {"top_n_species": "--top-n-species", **_SHARED_FILTER_TUNABLES},
     "temporal_stickiness": {"top_n_temporal": "--top-n-temporal", **_SHARED_FILTER_TUNABLES},
     "spatial_stickiness": {**_SHARED_FILTER_TUNABLES},
@@ -76,7 +73,7 @@ _STEP_TUNABLES: dict[str, dict[str, str]] = {
 
 
 def _tunable_flags(step: str, params: dict) -> list[str]:
-    """CLI flags for this step's algorithm tunables present in `params`."""
+    """CLI flags for this step's algorithm tunables present in params."""
     flags: list[str] = []
     for key, flag in _STEP_TUNABLES.get(step, {}).items():
         val = params.get(key)
@@ -94,30 +91,18 @@ def build_command(job: Job, step: str, params: dict) -> list[str]:
     if step == meta.BIRDNET:
         if not job.has_audio() and not job.get_reference_spots():
             raise ValueError("No audio uploaded. Upload WAV files (kind=audio) before running birdnet.")
-        # Aggregate sync (item 13): if the webapp seeded the job with the local
-        # birdnet_results.csv (kind=aggregate) and birdnet hasn't produced its own
-        # work aggregate yet, copy it in so BirdNET APPENDS to it — the returned
-        # aggregate is then the local one merged with the new detections.
         if (job.uploaded_aggregate.is_file()
                 and job.uploaded_aggregate.stat().st_size > 0
                 and not job.work_aggregate.is_file()):
             job.work_dir.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(job.uploaded_aggregate, job.work_aggregate)
-        # Dedup parity: seed the work processed-list from the uploaded one so
-        # BirdNET skips files already processed in a previous (server) run, just
-        # like the watcher does off its persistent processed_<script>.txt. The
-        # merged list is returned so the webapp can persist it locally.
         if (job.uploaded_processed.is_file()
                 and not job.processed_file.is_file()):
             job.work_dir.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(job.uploaded_processed, job.processed_file)
         cmd += ["--datasets", str(job.audio_dir)]
 
-        # Collect ALL file→spot overrides (references + uploaded audio) into
-        # a single --input-file-list / --input-file-spots pair so BirdNET
-        # writes the UI-selected spot name into the aggregate CSV.
         all_files, all_spots = [], []
-
         ref_spots = job.get_reference_spots()
         if ref_spots:
             for base, spot in ref_spots.items():
@@ -125,14 +110,12 @@ def build_command(job: Job, step: str, params: dict) -> list[str]:
                 if fp.is_file():
                     all_files.append(str(fp))
                     all_spots.append(spot if spot else "_")
-
         audio_spots = job.get_audio_spots()
         if audio_spots and job.audio_dir.is_dir():
             for f in sorted(job.audio_dir.iterdir()):
                 if f.is_file() and f.name in audio_spots:
                     all_files.append(str(f))
                     all_spots.append(audio_spots[f.name] or "_")
-
         if all_files:
             cmd += ["--input-file-list", *all_files]
             cmd += ["--input-file-spots", *all_spots]
@@ -143,6 +126,41 @@ def build_command(job: Job, step: str, params: dict) -> list[str]:
         cmd += ["--ebird-file", str(job.ebird_file())]
         cmd += ["--noise-path", str(job.static_noise())]
         cmd += ["--rain-path", str(job.rain_noise())]
+        if params.get("snr_db") is not None:
+            cmd += ["--snr-db", str(params["snr_db"])]
+        cmd += _common_filter_flags(params)
+        cmd += _tunable_flags(step, params)
+        return cmd
+
+    if step == meta.ACOUSTIC_INDICES:
+        if not job.has_audio() and not job.get_reference_spots():
+            raise ValueError("No audio uploaded. Upload WAV files before running acoustic_indices.")
+        out_dir = job.step_results_dir(step)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        indices_agg = out_dir / "indices_aggregate.csv"
+        indices_proc = out_dir / "indices_processed_files.txt"
+        cmd += ["--datasets", str(job.audio_dir)]
+        all_files, all_spots = [], []
+        ref_spots = job.get_reference_spots()
+        if ref_spots:
+            for base, spot in ref_spots.items():
+                fp = job.reference_dir / base
+                if fp.is_file():
+                    all_files.append(str(fp))
+                    all_spots.append(spot if spot else "_")
+        audio_spots = job.get_audio_spots()
+        if audio_spots and job.audio_dir.is_dir():
+            for f in sorted(job.audio_dir.iterdir()):
+                if f.is_file() and f.name in audio_spots:
+                    all_files.append(str(f))
+                    all_spots.append(audio_spots[f.name] or "_")
+        if all_files:
+            cmd += ["--input-file-list", *all_files]
+            cmd += ["--input-file-spots", *all_spots]
+        cmd += ["--aggregate-file-indices", str(indices_agg)]
+        cmd += ["--processed-file-indices", str(indices_proc)]
+        cmd += ["--output-dir", str(out_dir)]
+        cmd += ["--noise-path", str(job.static_noise())]
         if params.get("snr_db") is not None:
             cmd += ["--snr-db", str(params["snr_db"])]
         cmd += _common_filter_flags(params)
@@ -208,8 +226,6 @@ def _execute(job: Job, task_id: str, step: str, params: dict) -> None:
         status = "success" if rc == 0 else "failed"
         err = None if rc == 0 else f"Script exited with code {rc}. See _run.log."
         results = _result_files(job, step)
-        # STAC provenance per output (item 9 + 12). Best-effort; appends the
-        # generated <file>.stac.json sidecars to the task's result list.
         if rc == 0:
             try:
                 with open(log_path, "a") as log:
@@ -252,7 +268,7 @@ def _run_all_worker(job: Job, task_ids: dict, params: dict) -> None:
     """Sequential birdnet -> analyses in one thread (correct ordering)."""
     for step in meta.RUN_ORDER:
         tid = task_ids[step]
-        if step == meta.BIRDNET:
+        if step in (meta.BIRDNET, meta.ACOUSTIC_INDICES):
             if not job.has_audio() and not job.get_reference_spots():
                 job.update_task(tid, status="failed", finished_at=_now(),
                                 error="skipped: no audio uploaded")

@@ -1,0 +1,41 @@
+--- !DAG
+id: cem_spatial_stickiness
+name: CEM Bioacoustics - Spatial Stickiness
+version: "1.0"
+description: "Single-node DAG. Computes spatial habitat affinity scores (requires >= 2 spots)."
+params:
+  - project
+  - spots
+  - start_date
+  - end_date
+  - spots_geo
+  - filter_confidence
+  - filter_min_detections
+
+alg_type_nodes:
+  - CEM_Spatial_Stickiness
+
+dataset_type_nodes: []
+
+--- !Algorithm_Type
+id: CEM_Spatial_Stickiness
+name: Spatial Stickiness Analysis
+description: Measures how consistently species are detected across spatial locations. Requires >= 2 spots.
+params:
+  - name: project
+    type: string
+  - name: spots
+    type: array
+  - name: start_date
+    type: string
+  - name: end_date
+    type: string
+  - name: spots_geo
+    type: array
+  - name: filter_confidence
+    type: number
+  - name: filter_min_detections
+    type: integer
+input_datasets: []
+outputs: []
+depends_on: []

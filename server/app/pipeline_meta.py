@@ -11,6 +11,7 @@ from functools import lru_cache
 from .settings import get_settings
 
 BIRDNET = "birdnet"
+ACOUSTIC_INDICES = "acoustic_indices"
 
 # Fallback algorithm version used when a manifest entry has no "version" field.
 DEFAULT_ALGO_VERSION = "1.0.0"
@@ -25,11 +26,18 @@ ANALYSIS_SCRIPTS: dict[str, str] = {
     "daily_timeseries": "daily_call_timeseries.py",
 }
 
-SCRIPTS: dict[str, str] = {BIRDNET: "birdnet_predictions.py", **ANALYSIS_SCRIPTS}
+# Scripts that process raw WAV files (like birdnet)
+WAV_SCRIPTS: dict[str, str] = {
+    BIRDNET: "birdnet_predictions.py",
+    ACOUSTIC_INDICES: "acoustic_indices.py",
+}
+
+SCRIPTS: dict[str, str] = {**WAV_SCRIPTS, **ANALYSIS_SCRIPTS}
 
 # Order used by run/all (birdnet first; spatial needs >=2 spots so it may skip).
 RUN_ORDER: list[str] = [
     BIRDNET,
+    ACOUSTIC_INDICES,
     "heatmaps",
     "temporal_stickiness",
     "spatial_stickiness",
@@ -58,7 +66,10 @@ def load_manifest() -> dict[str, dict]:
         entries = json.loads(path.read_text())
         return {e["id"]: e for e in entries}
     except Exception:
-        return {sid: {"id": sid, "name": sid, "script_file": fn} for sid, fn in SCRIPTS.items()}
+        return {
+            sid: {"id": sid, "name": sid, "script_file": fn}
+            for sid, fn in SCRIPTS.items()
+        }
 
 
 def step_version(step: str) -> str:

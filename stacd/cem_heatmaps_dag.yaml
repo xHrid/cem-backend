@@ -1,0 +1,44 @@
+--- !DAG
+id: cem_heatmaps
+name: CEM Bioacoustics - Species Activity Heatmaps
+version: "1.0"
+description: "Single-node DAG. Generates species activity heatmaps from BirdNET aggregate data."
+params:
+  - project
+  - spots
+  - start_date
+  - end_date
+  - spots_geo
+  - top_n_species
+  - filter_confidence
+  - filter_min_detections
+
+alg_type_nodes:
+  - CEM_Heatmaps
+
+dataset_type_nodes: []
+
+--- !Algorithm_Type
+id: CEM_Heatmaps
+name: Species Activity Heatmaps
+description: Produces hour-of-day × date heatmap PNGs for top N species from aggregate CSV.
+params:
+  - name: project
+    type: string
+  - name: spots
+    type: array
+  - name: start_date
+    type: string
+  - name: end_date
+    type: string
+  - name: spots_geo
+    type: array
+  - name: top_n_species
+    type: integer
+  - name: filter_confidence
+    type: number
+  - name: filter_min_detections
+    type: integer
+input_datasets: []
+outputs: []
+depends_on: []

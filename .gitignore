@@ -9,6 +9,7 @@
 data/*
 !data/.gitkeep
 
+
 # ---- Python ----
 __pycache__/
 *.py[cod]
@@ -28,3 +29,6 @@ dist/
 Thumbs.db
 .idea/
 .vscode/
+
+.gitignore
+FILE_MAP.md

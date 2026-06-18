@@ -1,0 +1,48 @@
+--- !DAG
+id: cem_birdnet
+name: CEM Bioacoustics - BirdNET Species Detection
+version: "1.0"
+description: "Single-node DAG. Runs BirdNET on raw WAV audio, produces species aggregate CSV + filtered detections."
+params:
+  - project
+  - spots
+  - start_date
+  - end_date
+  - spots_geo
+  - snr_db
+  - min_confidence
+  - audio_spots
+
+alg_type_nodes:
+  - CEM_BirdNET
+
+dataset_type_nodes: []
+
+# ═══════════════════════════════════════════════
+# ALGORITHM TYPES
+# ═══════════════════════════════════════════════
+
+--- !Algorithm_Type
+id: CEM_BirdNET
+name: BirdNET Species Detection
+description: Processes raw WAV files through BirdNET, produces aggregate.csv and filtered detection outputs.
+params:
+  - name: project
+    type: string
+  - name: spots
+    type: array
+  - name: start_date
+    type: string
+  - name: end_date
+    type: string
+  - name: spots_geo
+    type: array
+  - name: snr_db
+    type: number
+  - name: min_confidence
+    type: number
+  - name: audio_spots
+    type: object
+input_datasets: []
+outputs: []
+depends_on: []

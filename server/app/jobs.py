@@ -1,18 +1,22 @@
 """
 Job store: per-job isolated workspace on disk + thread-safe status in job.json.
 
-Layout (<DATA_DIR>/jobs/<job_id>/):
-    job.json                 metadata + task records
-    input/audio/             uploaded WAV files  (birdnet --datasets)
-    input/reference/         reference WAV files (birdnet --input-file-list)
-    input/reference_spots.json   {basename: spot}  (reference files)
-    input/audio_spots.json       {basename: spot}  (regular audio files)
-    input/aggregate.csv      uploaded aggregate (optional)
-    input/ebird_checklist.txt, static_noise.wav, rain_noise.wav  (optional overrides)
-    work/aggregate.csv       birdnet-produced aggregate
-    work/processed_files.txt
-    work/output.csv          birdnet filtered output
-    results/<step>/...        per-step outputs + _run.log
+Jobs now live INSIDE their project directory, scoped by script:
+
+    <DATA_DIR>/projects/<project>/<script>/<job_id>/
+        job.json                 metadata + task records
+        input/audio/             symlinked WAV files from project spots
+        input/audio_spots.json   {basename: spot}
+        input/aggregate.csv      copied from project dataset/
+        input/processed_files.txt
+        input/geo.json           spot coordinates
+        work/aggregate.csv       birdnet-produced aggregate
+        work/processed_files.txt
+        work/output.csv          birdnet filtered output
+        results/<step>/...       per-step outputs + _run.log
+
+A global index at <DATA_DIR>/jobs_index/{job_id}.json stores {project, script}
+so polling endpoints can find a job by ID alone.
 """
 import json
 import threading
@@ -35,9 +39,9 @@ def new_id(prefix: str = "") -> str:
 
 
 class Job:
-    def __init__(self, job_id: str):
+    def __init__(self, root: Path, job_id: str):
         self.id = job_id
-        self.root = get_settings().jobs_dir / job_id
+        self.root = root
 
     # ---- paths ----
     @property
@@ -48,8 +52,6 @@ class Job:
     def audio_dir(self) -> Path: return self.input_dir / "audio"
     @property
     def reference_dir(self) -> Path: return self.input_dir / "reference"
-    @property
-    def reference_spots_path(self) -> Path: return self.input_dir / "reference_spots.json"
     @property
     def audio_spots_path(self) -> Path: return self.input_dir / "audio_spots.json"
     @property
@@ -89,7 +91,7 @@ class Job:
         return up if up.is_file() else get_settings().default_rain_noise
 
     def resolve_aggregate(self) -> Optional[Path]:
-        """Aggregate to feed analysis scripts: birdnet output first, else uploaded."""
+        """Aggregate to feed analysis: birdnet output first, else uploaded."""
         if self.work_aggregate.is_file() and self.work_aggregate.stat().st_size > 0:
             return self.work_aggregate
         if self.uploaded_aggregate.is_file() and self.uploaded_aggregate.stat().st_size > 0:
@@ -112,21 +114,8 @@ class Job:
         with _LOCK:
             return self._read()
 
-    # ---- reference spot map ----
-    def get_reference_spots(self) -> dict:
-        if self.reference_spots_path.is_file():
-            return json.loads(self.reference_spots_path.read_text())
-        return {}
-
-    def set_reference_spot(self, basename: str, spot: Optional[str]) -> None:
-        with _LOCK:
-            m = self.get_reference_spots()
-            m[basename] = spot or ""
-            self.reference_spots_path.write_text(json.dumps(m, indent=2))
-
-    # ---- audio spot map (all uploaded audio files) ----
+    # ---- audio spot map ----
     def get_audio_spots(self) -> dict:
-        """Return {basename: spot_name} for uploaded audio files."""
         if self.audio_spots_path.is_file():
             return json.loads(self.audio_spots_path.read_text())
         return {}
@@ -136,9 +125,8 @@ class Job:
             self.input_dir.mkdir(parents=True, exist_ok=True)
             self.audio_spots_path.write_text(json.dumps(mapping, indent=2))
 
-    # ---- spot geolocation (for STAC items, item 9) ----
+    # ---- spot geolocation ----
     def get_geo(self) -> list:
-        """[{name, lat, lon}, ...] passed through on job submission, or []."""
         if self.geo_path.is_file():
             try:
                 data = json.loads(self.geo_path.read_text())
@@ -146,6 +134,11 @@ class Job:
             except Exception:
                 return []
         return []
+
+    # ---- reference spots (legacy compat — always empty for CEM) ----
+    def get_reference_spots(self) -> dict:
+        """Reference audio mapping. CEM doesn't use pre-loaded reference files."""
+        return {}
 
     def set_geo(self, geo: Optional[list]) -> None:
         if not geo:
@@ -161,9 +154,6 @@ class Job:
             for p in sorted(self.results_dir.rglob("*")):
                 if p.is_file():
                     out.append(str(p.relative_to(self.root)).replace("\\", "/"))
-        # birdnet's primary output (and its STAC sidecars) also live in work/.
-        # processed_files.txt is included so the webapp can pull the merged
-        # processed list back and persist it locally (dedup parity).
         for p in (self.output_csv, self.work_aggregate, self.processed_file):
             if p.is_file():
                 out.append(str(p.relative_to(self.root)).replace("\\", "/"))
@@ -209,42 +199,76 @@ class Job:
         return None
 
 
-def create_job() -> Job:
+# ---------------------------------------------------------------------------
+# Job index — maps job_id -> {project, script, root_path}
+# Lives at DATA_DIR/jobs_index/ so polling endpoints find jobs by ID.
+# ---------------------------------------------------------------------------
+
+def _index_dir() -> Path:
+    return get_settings().DATA_DIR / "jobs_index"
+
+
+def _write_index(job_id: str, project: str, script: str, root: Path) -> None:
+    d = _index_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    entry = {"job_id": job_id, "project": project, "script": script, "root": str(root)}
+    (d / f"{job_id}.json").write_text(json.dumps(entry))
+
+
+def _read_index(job_id: str) -> Optional[dict]:
+    p = _index_dir() / f"{job_id}.json"
+    if p.is_file():
+        return json.loads(p.read_text())
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+def create_job(project_name: str, script: str) -> Job:
+    """Create a new job workspace inside the project's script directory."""
     with _LOCK:
-        job = Job(new_id("job_"))
+        s = get_settings()
+        job_id = new_id("job_")
+        root = s.projects_dir / project_name / script / job_id
+        job = Job(root, job_id)
         job.audio_dir.mkdir(parents=True, exist_ok=True)
-        job.reference_dir.mkdir(parents=True, exist_ok=True)
         job.work_dir.mkdir(parents=True, exist_ok=True)
         job.results_dir.mkdir(parents=True, exist_ok=True)
-        job._write({"job_id": job.id, "created_at": _now(), "tasks": []})
+        job._write({
+            "job_id": job_id,
+            "project": project_name,
+            "script": script,
+            "created_at": _now(),
+            "tasks": [],
+        })
+        _write_index(job_id, project_name, script, root)
         return job
 
 
 def get_job(job_id: str) -> Optional[Job]:
-    job = Job(job_id)
+    """Look up a job by ID using the index."""
+    idx = _read_index(job_id)
+    if idx is None:
+        return None
+    root = Path(idx["root"])
+    job = Job(root, job_id)
     return job if job.exists() else None
 
 
-def ensure_job(job_id: str) -> Job:
-    """Get a job by a FIXED id, creating its workspace if absent.
-
-    Used for the STACD/Airflow 'registered' workspace — a persistent job dir
-    (not a random uuid) that audio is uploaded into and that accumulates the
-    aggregate across DAG runs.
-    """
-    with _LOCK:
-        job = Job(job_id)
-        if not job.exists():
-            job.audio_dir.mkdir(parents=True, exist_ok=True)
-            job.reference_dir.mkdir(parents=True, exist_ok=True)
-            job.work_dir.mkdir(parents=True, exist_ok=True)
-            job.results_dir.mkdir(parents=True, exist_ok=True)
-            job._write({"job_id": job.id, "created_at": _now(), "tasks": []})
-        return job
-
-
-def list_jobs() -> list[str]:
-    d = get_settings().jobs_dir
+def list_jobs(project_name: Optional[str] = None) -> list[str]:
+    """List job IDs. Optionally filter by project."""
+    d = _index_dir()
     if not d.is_dir():
         return []
-    return sorted(p.name for p in d.iterdir() if (p / "job.json").is_file())
+    ids = []
+    for p in sorted(d.glob("*.json")):
+        try:
+            entry = json.loads(p.read_text())
+            if project_name and entry.get("project") != project_name:
+                continue
+            ids.append(entry["job_id"])
+        except Exception:
+            continue
+    return ids

@@ -1,71 +1,46 @@
 """
-STACD / Airflow synchronous algorithm API — the ONLY API surface.
+CEM Server API -- clean 3-group design.
 
-Model:
-  * The web app uploads audio DIRECTLY to the server (POST /api/v1/datasets/audio).
-    That call mints a fresh job_id, saves the WAVs under
-    data/<job_id>/input/audio/, and returns the job_id.
-  * The front-end hands that job_id to an Airflow layer. Airflow runs each DAG
-    node by calling ONE algorithm endpoint with a STATIC URL:
-        POST /api/v1/jobs/{algo}
-    passing ``job_id`` inside the JSON request body.  Airflow BLOCKS until the
-    response arrives — the HTTP response IS the completion signal (synchronous;
-    no polling).
-  * Each pipeline step is one algorithm node. SEVEN explicit named wrappers, one
-    per algorithm, plus a generic fallback:
-
-        POST /api/v1/jobs/birdnet          body: {"job_id": "..."}
-        POST /api/v1/jobs/heatmaps         body: {"job_id": "..."}
-        POST /api/v1/jobs/temporal_stickiness
-        POST /api/v1/jobs/spatial_stickiness
-        POST /api/v1/jobs/migratory_classification
-        POST /api/v1/jobs/solar_correlation
-        POST /api/v1/jobs/daily_timeseries
-        POST /api/v1/jobs/{algo}           (generic, registered last)
-
-    birdnet reads the job's audio dir and appends to the job's aggregate; the six
-    analyses read that aggregate.  All endpoints receive ``job_id`` in the
-    request body so Airflow can use a single static URL template.
-
-Responses match the STACD contract:
-    200 -> {status, Success, message, task_id, asset_id[, asset_ids], stac}
-    400 -> bad input        (skipped)        {status, error, message, task_id}
-    404 -> no data / no job (skipped)        {status, error, message, task_id}
-    500 -> pipeline failure  (failed)        {status, error, message, task_id}
-
-Read-only endpoints (job summary, results, logs, downloads) are kept for
-debugging and result retrieval; they live under /api/v1/jobs/{job_id}.
+  1. Upload -- project-level file storage.
+  2. Scripts -- synchronous algorithm execution with typed Pydantic bodies.
+  3. Polling & download -- job status, results, files.
 """
+import json
 import os
 import uuid
 import zipfile
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Body, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Body, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 
 from . import jobs as jobstore
 from . import pipeline_meta as meta
+from . import projects as projectstore
 from . import runner
 from . import stac
+from .schemas import (
+    AcousticIndicesParams,
+    BaseRunParams,
+    BirdnetParams,
+    DailyTimeseriesParams,
+    HeatmapsParams,
+    MigratoryClassificationParams,
+    SolarCorrelationParams,
+    SpatialStickinessParams,
+    STEP_MODELS,
+    TemporalStickinessParams,
+)
 from .settings import get_settings
 
-router = APIRouter(prefix="/api/v1", tags=["stacd"])
-
-# Non-audio single-file override kinds (optional; uploaded into a job's input/).
-_FIXED_NAMES = {
-    "aggregate": "aggregate.csv",
-    "processed": "processed_files.txt",
-    "ebird": "ebird_checklist.txt",
-    "static_noise": "static_noise.wav",
-    "rain_noise": "rain_noise.wav",
-}
+router = APIRouter(prefix="/api/v1", tags=["cem"])
 
 
-# --------------------------------------------------------------------------- #
-# helpers
-# --------------------------------------------------------------------------- #
+# =========================================================================== #
+#  Helpers
+# =========================================================================== #
+
 def _require_job(job_id: str) -> jobstore.Job:
     job = jobstore.get_job(job_id)
     if job is None:
@@ -99,13 +74,86 @@ def _save_upload(dest: Path, upload: UploadFile) -> int:
     return written
 
 
-# --------------------------------------------------------------------------- #
-# steps catalogue
-# --------------------------------------------------------------------------- #
+# =========================================================================== #
+#  GROUP 1 -- Upload
+# =========================================================================== #
+
+@router.get("/projects/status")
+def project_status(project: str = Query(..., description="Project folder name")):
+    proj = projectstore.get_project(project)
+    if proj is None:
+        raise HTTPException(404, f"Project '{project}' not found.")
+    return proj.status()
+
+
+@router.post("/projects/upload/audio")
+def project_upload_audio(
+    project: str = Form(..., description="Project folder name"),
+    spot: str = Form(..., description="Spot name for these files"),
+    files: list[UploadFile] = File(...),
+):
+    if not files:
+        raise HTTPException(400, "No files provided.")
+    if not spot.strip():
+        raise HTTPException(400, "spot is required.")
+
+    proj = projectstore.get_or_create_project(project)
+    audio_dir = proj.spot_audio_dir(spot)
+    audio_dir.mkdir(parents=True, exist_ok=True)
+    existing = set(p.name for p in audio_dir.iterdir() if p.is_file())
+
+    saved, skipped = [], []
+    for up in files:
+        fname = _safe_name(up.filename)
+        if fname in existing:
+            skipped.append(fname)
+            continue
+        size = _save_upload(audio_dir / fname, up)
+        saved.append({"filename": fname, "size_bytes": size})
+        existing.add(fname)
+
+    proj._touch()
+    return {
+        "status": "ok",
+        "project": project,
+        "spot": spot,
+        "uploaded": saved,
+        "skipped": skipped,
+        "spot_audio_count": proj.audio_count(spot),
+        "total_audio": proj.audio_count(),
+    }
+
+
+@router.post("/projects/upload/aggregate")
+def project_upload_aggregate(
+    project: str = Form(..., description="Project folder name"),
+    file: UploadFile = File(...),
+):
+    proj = projectstore.get_or_create_project(project)
+    proj.dataset_dir.mkdir(parents=True, exist_ok=True)
+    _save_upload(proj.aggregate_path, file)
+    proj._touch()
+    return {"status": "ok", "project": project, "has_aggregate": True}
+
+
+@router.post("/projects/upload/processed")
+def project_upload_processed(
+    project: str = Form(..., description="Project folder name"),
+    file: UploadFile = File(...),
+):
+    proj = projectstore.get_or_create_project(project)
+    proj.dataset_dir.mkdir(parents=True, exist_ok=True)
+    _save_upload(proj.processed_path, file)
+    proj._touch()
+    return {"status": "ok", "project": project, "has_processed": True}
+
+
+# =========================================================================== #
+#  GROUP 2 -- Scripts
+# =========================================================================== #
+
 @router.get("/steps")
 def steps():
-    """Catalogue of runnable algorithms — full manifest entries so the UI can
-    render script-specific parameters, inputs, and dependency info."""
     man = meta.load_manifest()
     return {
         sid: {
@@ -123,92 +171,12 @@ def steps():
     }
 
 
-# --------------------------------------------------------------------------- #
-# Upload: mint a job and save audio into it (front-end calls this directly)
-# --------------------------------------------------------------------------- #
-@router.post("/datasets/audio")
-def upload_audio(files: list[UploadFile] = File(...)):
-    """Create a fresh job and upload WAVs into data/<job_id>/input/audio/.
-
-    Returns the minted job_id; the front-end hands this to Airflow, which then
-    calls POST /api/v1/jobs/{algo} with job_id in the request body."""
-    if not files:
-        raise HTTPException(400, "No files provided.")
-    job = jobstore.create_job()
-    saved = []
-    for up in files:
-        name = _safe_name(up.filename)
-        size = _save_upload(job.audio_dir / name, up)
-        saved.append({"filename": name, "size_bytes": size})
-    return {
-        "status": "ok",
-        "job_id": job.id,
-        "uploaded": saved,
-        "audio_dir": str(job.audio_dir),
-    }
-
-
-@router.post("/jobs/{job_id}/datasets/{kind}")
-def upload_override(job_id: str, kind: str, files: list[UploadFile] = File(...)):
-    """Optional: add more audio, or a single-file override to an existing job.
-
-    kind = audio | aggregate | processed | ebird | static_noise | rain_noise.
-    audio appends WAVs; the override kinds save to a fixed name in input/."""
-    job = _require_job(job_id)
-    if kind != "audio" and kind not in _FIXED_NAMES:
-        raise HTTPException(400, f"Unknown kind '{kind}'. One of: "
-                                 f"{['audio', *sorted(_FIXED_NAMES)]}")
-    if not files:
-        raise HTTPException(400, "No files provided.")
-    saved = []
-    for up in files:
-        original = _safe_name(up.filename)
-        if kind == "audio":
-            dest = job.audio_dir / original
-        else:
-            dest = job.input_dir / _FIXED_NAMES[kind]
-        size = _save_upload(dest, up)
-        saved.append({"filename": original, "kind": kind, "size_bytes": size})
-    return {"status": "ok", "job_id": job.id, "uploaded": saved}
-
-
-# --------------------------------------------------------------------------- #
-# Shared helpers for the algorithm runners
-# --------------------------------------------------------------------------- #
-def _parse_params(p: dict, step: str | None = None) -> tuple[dict, list, dict]:
-    """Pull pipeline params + spot geolocation + audio-spot mapping out of the
-    request body.
-
-    Airflow sends every DAG param as a string, so ``spots`` may arrive
-    comma-separated; normalize to a list. When a tunable is absent from the
-    request we leave it out — the script falls through to config.py defaults.
-    The frontend SHOULD always send explicit values (populated from the
-    manifest's default field), but the API never breaks on an empty body."""
-    rp: dict = {}
-    spots = p.get("spots")
-    if isinstance(spots, str):
-        spots = [x for x in spots.split(",") if x]
-    if spots:
-        rp["spots"] = spots
-    if p.get("start_date"):
-        rp["start_date"] = str(p["start_date"])
-    if p.get("end_date"):
-        rp["end_date"] = str(p["end_date"])
-    if p.get("snr_db") not in (None, ""):
-        rp["snr_db"] = p["snr_db"]
-    for k in ("min_confidence", "top_n_species", "top_n_temporal",
-              "sci_threshold", "kurtosis_threshold", "pmr_threshold",
-              "window_size", "min_solar_days", "max_timeseries_species",
-              "filter_confidence", "filter_min_detections"):
-        if p.get(k) not in (None, ""):
-            rp[k] = p[k]
-    geo = p.get("spots_geo") or []
-    audio_spots = p.get("audio_spots") or {}   # {basename: spot_name}
-    return rp, geo, audio_spots
+def _extract_script_params(body: dict) -> dict:
+    common = {"project", "spots", "start_date", "end_date", "spots_geo"}
+    return {k: v for k, v in body.items() if k not in common and v is not None}
 
 
 def _classify_error(err: str) -> tuple[int, str]:
-    """Map a task error string to a STACD HTTP code."""
     e = (err or "").lower()
     if "bad date" in e or "expected yyyy" in e:
         return 400, "BAD_REQUEST"
@@ -226,42 +194,51 @@ def _browse_href(job: jobstore.Job, rel: str) -> Optional[str]:
     return None
 
 
-# --------------------------------------------------------------------------- #
-# Shared synchronous core (behind every algorithm wrapper)
-# --------------------------------------------------------------------------- #
-def _run_algorithm_sync(algo: str, params: dict | None):
-    """Run one algorithm node on one job to completion; return the STACD response.
+def _run_script(script_name: str, body: dict):
+    if not meta.is_valid_step(script_name):
+        raise HTTPException(404, f"Unknown script '{script_name}'. Options: {list(meta.SCRIPTS)}")
 
-    ``job_id`` is extracted from the request body (``params``).  Blocking — the
-    returned value IS the completion signal Airflow waits on."""
-    if not meta.is_valid_step(algo):
-        raise HTTPException(404, f"Unknown algorithm '{algo}'. One of: {list(meta.SCRIPTS)}")
+    project = body.get("project")
+    spots = body.get("spots")
+    if not project:
+        raise HTTPException(400, "project is required.")
+    if not spots:
+        raise HTTPException(400, "spots is required (list of spot names).")
 
-    body = params or {}
-    job_id = body.get("job_id")
-    if not job_id:
-        raise HTTPException(400, "Missing required field 'job_id' in request body.")
-    job = _require_job(job_id)
-    run_params, geo, audio_spots = _parse_params(params or {}, step=algo)
-    if geo:
-        job.set_geo(geo)  # also stamps geometry onto the on-disk sidecars
-    if audio_spots:
-        job.set_audio_spots(audio_spots)
+    start_date = body.get("start_date")
+    end_date = body.get("end_date")
+    spots_geo = body.get("spots_geo")
+
+    proj = projectstore.get_project(project)
+    if proj is None:
+        raise HTTPException(404, f"Project '{project}' not found.")
+
+    job = jobstore.create_job(project, script_name)
+    stats = proj.populate_job(job, spots=spots, start_date=start_date, end_date=end_date)
+
+    if spots_geo:
+        job.set_geo(spots_geo)
+
+    run_params = _extract_script_params(body)
+    run_params["spots"] = spots
+    if start_date:
+        run_params["start_date"] = start_date
+    if end_date:
+        run_params["end_date"] = end_date
 
     task_id = uuid.uuid4().hex
-    task = runner.run_sync(job, algo, run_params)
+    task = runner.run_sync(job, script_name, run_params)
 
     if task["status"] != "success":
         code, etype = _classify_error(task.get("error"))
         return JSONResponse(status_code=code, content={
             "status": "skipped" if code in (400, 404) else "failed",
             "error": etype,
-            "message": task.get("error") or "Algorithm failed.",
+            "message": task.get("error") or "Script failed.",
             "task_id": task_id,
+            "job_id": job.id,
         })
 
-    # Success: build a STAC 1.1.0 item per real output file (skip logs, STAC
-    # sidecars, and the processed-files bookkeeping list).
     rels = [r for r in task.get("results", [])
             if not r.endswith(".stac.json")
             and not r.endswith("_run.log")
@@ -271,229 +248,88 @@ def _run_algorithm_sync(algo: str, params: dict | None):
     items, asset_ids = [], []
     for rel in rels:
         fname = rel.split("/")[-1]
-        asset_id = f"{prefix}/{job.id}/{algo}/{drange}/{fname}"
+        asset_id = f"{prefix}/{job.id}/{script_name}/{drange}/{fname}"
         items.append(stac.build_stacd_item(
-            asset_id, algo, job.root / rel, run_params, geo, browse_href=_browse_href(job, rel)))
+            asset_id, script_name, job.root / rel, run_params, spots_geo or [],
+            browse_href=_browse_href(job, rel)))
         asset_ids.append(asset_id)
 
-    msg = f"{meta.load_manifest().get(algo, {}).get('name', algo)} completed"
-    body = {
+    proj.update_from_job(job)
+
+    msg = f"{meta.load_manifest().get(script_name, {}).get('name', script_name)} completed"
+    resp = {
         "status": "completed",
         "Success": msg,
         "message": msg,
         "task_id": task_id,
         "job_id": job.id,
+        "project": project,
+        "audio_linked": stats["audio_linked"],
+        "audio_skipped": stats["audio_skipped"],
     }
     if len(items) == 1:
-        body["asset_id"] = asset_ids[0]
-        body["stac"] = items[0]
+        resp["asset_id"] = asset_ids[0]
+        resp["stac"] = items[0]
     else:
-        body["asset_id"] = asset_ids
-        body["asset_ids"] = asset_ids
-        body["stac"] = items
-    return body
+        resp["asset_id"] = asset_ids
+        resp["asset_ids"] = asset_ids
+        resp["stac"] = items
+    return resp
 
 
-# --------------------------------------------------------------------------- #
-# OpenAPI example payloads (Swagger docs only — the live shape is built above).
-# --------------------------------------------------------------------------- #
-def _stac_example(asset_id: str, name: str) -> dict:
-    s = get_settings()
-    fname = asset_id.split("/")[-1]
-    return {
-        "type": "Feature",
-        "stac_version": s.STACD_STAC_VERSION,
-        "stac_extensions": [],
-        "id": asset_id.replace("/", "_"),
-        "geometry": {"type": "Point", "coordinates": [77.1897, 28.5635]},
-        "bbox": [77.1897, 28.5635, 77.1897, 28.5635],
-        "properties": {
-            "title": name,
-            "description": f"{name} output.",
-            "datetime": "2026-06-10T09:27:38Z",
-            "start_datetime": "2025-11-01T00:00:00Z",
-            "end_datetime": "2025-12-31T00:00:00Z",
-            "cem:algorithm_version": "1.0.0",
-            "cem:api_version": s.API_VERSION,
-            "cem:parameters": {"start_date": "20251101", "end_date": "20251231"},
-            "cem:spots": [{"name": "SPOTA", "lat": 28.5635, "lon": 77.1897}],
-        },
-        "links": [
-            {"rel": "collection", "href": "../collection.json",
-             "type": "application/json", "title": s.STAC_COLLECTION},
-            {"rel": "parent", "href": "../collection.json",
-             "type": "application/json", "title": s.STAC_COLLECTION},
-        ],
-        "assets": {"data": {"href": fname, "type": "text/csv",
-                            "title": fname, "roles": ["data"]}},
-        "collection": s.STAC_COLLECTION,
-    }
+# ---- named script wrappers (typed bodies -> Swagger shows all params) ----
+
+@router.post("/scripts/birdnet", summary="BirdNET species detection")
+def run_birdnet(body: BirdnetParams):
+    return _run_script("birdnet", body.model_dump())
 
 
-def _responses_for(algo: str, name: str) -> dict:
-    s = get_settings()
-    prefix = s.STACD_ASSET_ID_PREFIX
-    a1 = f"{prefix}/job_abc123/{algo}/20251101_20251231/{algo}_summary.csv"
-    a2 = f"{prefix}/job_abc123/{algo}/20251101_20251231/{algo}_plot.png"
-    single = {
-        "status": "completed",
-        "Success": f"{name} completed",
-        "message": f"{name} completed",
-        "task_id": "f5e2b620fdc440678b7a58295c02c1c4",
-        "job_id": "job_abc123",
-        "asset_id": a1,
-        "stac": _stac_example(a1, name),
-    }
-    multi = {
-        "status": "completed",
-        "Success": f"{name} completed",
-        "message": f"{name} completed",
-        "task_id": "d50a922f2e024f6b9da6977cbb66e9fa",
-        "job_id": "job_abc123",
-        "asset_id": [a1, a2],
-        "asset_ids": [a1, a2],
-        "stac": [_stac_example(a1, name), _stac_example(a2, name)],
-    }
-    return {
-        200: {
-            "description": f"{name} completed; asset(s) produced and described as "
-                           f"STAC {s.STACD_STAC_VERSION} item(s).",
-            "content": {"application/json": {"examples": {
-                "single_output": {"summary": "One output file (scalar asset_id + object stac)",
-                                   "value": single},
-                "multiple_outputs": {"summary": "Several output files (asset_id/asset_ids arrays + stac array)",
-                                     "value": multi},
-            }}},
-        },
-        400: {
-            "description": "Bad input (e.g. malformed date) — Airflow marks the task skipped.",
-            "content": {"application/json": {"example": {
-                "status": "skipped", "error": "BAD_REQUEST",
-                "message": "Bad date '2025-13-01', expected YYYY-MM-DD or YYYYMMDD",
-                "task_id": "b1c2d3e4f5a60718293a4b5c6d7e8f90",
-            }}},
-        },
-        404: {
-            "description": "No data (unknown job, no audio, empty aggregate, or no "
-                           "detections) — Airflow marks the task skipped.",
-            "content": {"application/json": {"example": {
-                "status": "skipped", "error": "NO_DATA",
-                "message": "No aggregate available. Run birdnet first, or upload an aggregate CSV.",
-                "task_id": "0f1e2d3c4b5a69788796a5b4c3d2e1f0",
-            }}},
-        },
-        500: {
-            "description": "Pipeline/computation error — Airflow marks the task failed.",
-            "content": {"application/json": {"example": {
-                "status": "failed", "error": "PIPELINE_ERROR",
-                "message": "Script exited with code 1. See _run.log.",
-                "task_id": "9a8b7c6d5e4f3021123445566778899a",
-            }}},
-        },
-    }
+@router.post("/scripts/acoustic_indices", summary="Acoustic indices + box plots")
+def run_acoustic_indices(body: AcousticIndicesParams):
+    return _run_script("acoustic_indices", body.model_dump())
 
 
-# Request-body example shown in Swagger (same body for every wrapper; each algo
-# only reads its own tunables).
-_BODY_EXAMPLE = {
-    "job_id": "job_abc123",
-    "spots": "04213SPOT1,71301SPOT2",
-    "start_date": "20251101",
-    "end_date": "20251231",
-    "snr_db": 18,
-    "min_confidence": 0.25,
-    "top_n_species": 25,
-    "top_n_temporal": 80,
-    "sci_threshold": 0.9,
-    "kurtosis_threshold": 15,
-    "pmr_threshold": 50,
-    "window_size": 60,
-    "min_solar_days": 5,
-    "max_timeseries_species": 50,
-    "filter_confidence": 0.3,
-    "filter_min_detections": 10,
-    "spots_geo": [{"name": "04213SPOT1", "lat": 28.5635, "lon": 77.1897}],
-}
+@router.post("/scripts/heatmaps", summary="Species activity heatmaps")
+def run_heatmaps(body: HeatmapsParams):
+    return _run_script("heatmaps", body.model_dump())
 
 
-# --------------------------------------------------------------------------- #
-# Algorithm wrappers (synchronous) — SEVEN explicit named routes (static URLs).
-# job_id comes from the request body.  Registered before the generic fallback.
-# --------------------------------------------------------------------------- #
-@router.post("/jobs/birdnet",
-             responses=_responses_for("birdnet", "BirdNET Species Detection"),
-             summary="BirdNET species detection (synchronous)")
-def run_birdnet_sync(params: dict = Body(default=None, examples=[_BODY_EXAMPLE])):
-    """Run BirdNET over the job's uploaded audio to completion, append detections
-    to the job aggregate, and return the STACD asset response.  ``job_id`` must
-    be supplied in the request body.  Reads tunables `snr_db`, `min_confidence`.
-    Needs audio uploaded for this job first."""
-    return _run_algorithm_sync("birdnet", params)
+@router.post("/scripts/temporal_stickiness", summary="Temporal stickiness")
+def run_temporal_stickiness(body: TemporalStickinessParams):
+    return _run_script("temporal_stickiness", body.model_dump())
 
 
-@router.post("/jobs/heatmaps",
-             responses=_responses_for("heatmaps", "Species Activity Heatmaps"),
-             summary="Species activity heatmaps (synchronous)")
-def run_heatmaps_sync(params: dict = Body(default=None, examples=[_BODY_EXAMPLE])):
-    """Per-spot hourly activity heatmaps from the aggregate.  ``job_id`` must be
-    supplied in the request body.  Reads tunable `top_n_species`.  Needs the
-    BirdNET aggregate."""
-    return _run_algorithm_sync("heatmaps", params)
+@router.post("/scripts/spatial_stickiness", summary="Spatial stickiness")
+def run_spatial_stickiness(body: SpatialStickinessParams):
+    return _run_script("spatial_stickiness", body.model_dump())
 
 
-@router.post("/jobs/temporal_stickiness",
-             responses=_responses_for("temporal_stickiness", "Activity Regularity (Temporal)"),
-             summary="Temporal stickiness (synchronous)")
-def run_temporal_stickiness_sync(params: dict = Body(default=None, examples=[_BODY_EXAMPLE])):
-    """Consecutive-day temporal activity correlation per species.  ``job_id``
-    must be supplied in the request body.  Reads tunable `top_n_temporal`.
-    Needs the BirdNET aggregate."""
-    return _run_algorithm_sync("temporal_stickiness", params)
+@router.post("/scripts/migratory_classification", summary="Migratory vs resident classification")
+def run_migratory_classification(body: MigratoryClassificationParams):
+    return _run_script("migratory_classification", body.model_dump())
 
 
-@router.post("/jobs/spatial_stickiness",
-             responses=_responses_for("spatial_stickiness", "Habitat Affinity (Spatial)"),
-             summary="Spatial stickiness (synchronous)")
-def run_spatial_stickiness_sync(params: dict = Body(default=None, examples=[_BODY_EXAMPLE])):
-    """Consecutive-day spatial distribution correlation.  ``job_id`` must be
-    supplied in the request body.  Needs the BirdNET aggregate with >=2 spots
-    (returns 404-skip otherwise)."""
-    return _run_algorithm_sync("spatial_stickiness", params)
+@router.post("/scripts/solar_correlation", summary="Solar event correlation")
+def run_solar_correlation(body: SolarCorrelationParams):
+    return _run_script("solar_correlation", body.model_dump())
 
 
-@router.post("/jobs/migratory_classification",
-             responses=_responses_for("migratory_classification", "Migratory vs Resident"),
-             summary="Migratory vs resident classification (synchronous)")
-def run_migratory_classification_sync(params: dict = Body(default=None, examples=[_BODY_EXAMPLE])):
-    """Classify species migratory vs resident.  ``job_id`` must be supplied in
-    the request body.  Reads tunables `sci_threshold`, `kurtosis_threshold`,
-    `pmr_threshold`, `window_size`.  Needs the aggregate."""
-    return _run_algorithm_sync("migratory_classification", params)
+@router.post("/scripts/daily_timeseries", summary="Daily call time series")
+def run_daily_timeseries(body: DailyTimeseriesParams):
+    return _run_script("daily_timeseries", body.model_dump())
 
 
-@router.post("/jobs/solar_correlation",
-             responses=_responses_for("solar_correlation", "Solar Event Correlation"),
-             summary="Solar event correlation (synchronous)")
-def run_solar_correlation_sync(params: dict = Body(default=None, examples=[_BODY_EXAMPLE])):
-    """Correlate daily peak activity hour with sunrise/sunset.  ``job_id`` must
-    be supplied in the request body.  Reads tunable `min_solar_days`.  Needs the
-    BirdNET aggregate."""
-    return _run_algorithm_sync("solar_correlation", params)
+# ---- generic fallback (registered LAST) ----
+
+@router.post("/scripts/{name}", summary="Run any script (generic fallback)")
+def run_script_generic(name: str, body: dict = Body(...)):
+    return _run_script(name, body)
 
 
-@router.post("/jobs/daily_timeseries",
-             responses=_responses_for("daily_timeseries", "Daily Call Time Series"),
-             summary="Daily call time series (synchronous)")
-def run_daily_timeseries_sync(params: dict = Body(default=None, examples=[_BODY_EXAMPLE])):
-    """Per-species daily call-count time series + data-availability heatmap.
-    ``job_id`` must be supplied in the request body.  Reads tunable
-    `max_timeseries_species`.  Needs the BirdNET aggregate."""
-    return _run_algorithm_sync("daily_timeseries", params)
+# =========================================================================== #
+#  GROUP 3 -- Polling & download
+# =========================================================================== #
 
-
-# --------------------------------------------------------------------------- #
-# Read-only: job summary, results, logs, downloads (debugging / retrieval).
-# --------------------------------------------------------------------------- #
 @router.get("/jobs/{job_id}")
 def get_job(job_id: str):
     job = _require_job(job_id)
@@ -501,6 +337,8 @@ def get_job(job_id: str):
     s = get_settings()
     return {
         "job_id": job.id,
+        "project": meta_d.get("project"),
+        "script": meta_d.get("script"),
         "created_at": meta_d["created_at"],
         "inputs": {
             "audio_files": sorted(p.name for p in job.audio_dir.glob("*")) if job.audio_dir.is_dir() else [],
@@ -509,7 +347,6 @@ def get_job(job_id: str):
         "has_aggregate": job.resolve_aggregate() is not None,
         "tasks": meta_d.get("tasks", []),
         "results": job.list_results(),
-        "browse_url": s.file_browser_url(job.id),
         "api_version": s.API_VERSION,
     }
 
@@ -521,13 +358,11 @@ def list_results(job_id: str):
     return {
         "job_id": job.id,
         "results": job.list_results(),
-        "browse_url": s.file_browser_url(job.id),
         "api_version": s.API_VERSION,
     }
 
 
-@router.get("/jobs/{job_id}/tasks/{task_id}/log",
-            response_class=PlainTextResponse)
+@router.get("/jobs/{job_id}/tasks/{task_id}/log", response_class=PlainTextResponse)
 def get_task_log(job_id: str, task_id: str):
     job = _require_job(job_id)
     t = job.get_task(task_id)
@@ -581,17 +416,3 @@ def download_file(job_id: str, path: str = Query(..., description="Result path r
     if not target.is_file():
         raise HTTPException(404, f"File '{path}' not found.")
     return FileResponse(target, filename=target.name)
-
-
-# --------------------------------------------------------------------------- #
-# Generic fallback (registered LAST so the seven named routes match first).
-# --------------------------------------------------------------------------- #
-@router.post("/jobs/{algo}",
-             responses=_responses_for("solar_correlation", "Algorithm"),
-             summary="Run any algorithm synchronously (generic fallback)")
-def run_algorithm(algo: str, params: dict = Body(default=None, examples=[_BODY_EXAMPLE])):
-    """Generic synchronous runner.  ``job_id`` must be supplied in the request
-    body.  The seven named routes above are preferred and self-documented; this
-    catch-all keeps the contract working for any valid `algo` id and for any
-    future step."""
-    return _run_algorithm_sync(algo, params)

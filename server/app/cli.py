@@ -1,27 +1,5 @@
 """
-Stable CLI entrypoint so compute is invokable by Airflow, not only by a direct
-user HTTP call (item 10). It drives the SAME jobstore + runner the REST API uses,
-in-process, against the shared data dir — so an Airflow operator can trigger a
-run on the user's behalf with no browser involved. The REST API remains the
-other supported trigger; this CLI is the orchestration-friendly one.
-
-Examples
---------
-  # one-shot: make a job, ingest a folder of WAVs, run the whole pipeline, wait
-  python -m app.cli ingest --audio /data/incoming/spotA --step all --wait \
-      --spots SPOTA --start 20251101 --end 20251231 --geo /data/incoming/geo.json
-
-  # granular
-  python -m app.cli create-job
-  python -m app.cli upload --job job_abc --kind audio /data/incoming/*.wav
-  python -m app.cli run    --job job_abc --step birdnet --snr 18 --wait
-  python -m app.cli status --job job_abc
-
-  # housekeeping (item 15)
-  python -m app.cli cleanup --hours 168
-
-Exit code is non-zero if any run task ends 'failed', so Airflow marks the task
-failed.
+Stable CLI entrypoint for Airflow integration.
 """
 import argparse
 import glob
@@ -95,7 +73,6 @@ def _run_params(args) -> dict:
         p["end_date"] = args.end
     if getattr(args, "snr", None) is not None:
         p["snr_db"] = args.snr
-    # Per-step algorithm tunables (arg dest -> run-param key).
     for attr in ("min_confidence", "top_n_species", "top_n_temporal",
                  "sci_threshold", "kurtosis_threshold", "pmr_threshold",
                  "window_size", "min_solar_days", "max_timeseries_species"):
@@ -106,7 +83,6 @@ def _run_params(args) -> dict:
 
 
 def _wait(job: jobstore.Job, task_ids: list[str], poll: float = 2.0) -> bool:
-    """Block until all tasks terminal. Returns True if all succeeded."""
     ok = True
     pending = set(task_ids)
     while pending:
@@ -116,17 +92,14 @@ def _wait(job: jobstore.Job, task_ids: list[str], poll: float = 2.0) -> bool:
             if t and t["status"] in _TERMINAL:
                 pending.discard(tid)
                 status = t["status"]
-                print(f"  [{t['step']}] {status}" + (f" — {t['error']}" if t.get("error") else ""))
+                print(f"  [{t['step']}] {status}" + (f" - {t['error']}" if t.get("error") else ""))
                 if status == "failed":
                     ok = False
     return ok
 
 
-# --------------------------------------------------------------------------- #
-# commands
-# --------------------------------------------------------------------------- #
 def cmd_create_job(args) -> int:
-    job = jobstore.create_job()
+    job = jobstore.create_job(args.project, args.step or "birdnet")
     _apply_geo(job, args.geo)
     print(job.id)
     return 0
@@ -166,8 +139,7 @@ def cmd_run_all(args) -> int:
 
 
 def cmd_ingest(args) -> int:
-    """Create a job, ingest a folder/glob of audio, then run a step (or all)."""
-    job = jobstore.create_job()
+    job = jobstore.create_job(args.project, args.step if args.step != "all" else "birdnet")
     _apply_geo(job, args.geo)
     src = args.audio
     paths = [str(p) for p in Path(src).rglob("*.wav")] if Path(src).is_dir() else [src]
@@ -217,57 +189,73 @@ def _add_run_flags(p):
     p.add_argument("--spots", help="comma-separated spot names")
     p.add_argument("--start", help="start date YYYYMMDD or YYYY-MM-DD")
     p.add_argument("--end", help="end date YYYYMMDD or YYYY-MM-DD")
-    p.add_argument("--snr", type=float, help="BirdNET denoise SNR dB (birdnet only)")
-    p.add_argument("--geo", help="path to a JSON file: [{name,lat,lon}, ...] for STAC")
+    p.add_argument("--snr", type=float, help="BirdNET denoise SNR dB")
+    p.add_argument("--geo", help="path to JSON file with spot coords")
     p.add_argument("--wait", action="store_true", help="block until tasks finish")
-    # Per-step algorithm tunables (each forwarded only to the step that reads it).
-    p.add_argument("--min-confidence", type=float, help="BirdNET min detection confidence 0-1 (birdnet)")
-    p.add_argument("--top-n-species", type=int, help="top N species to plot (heatmaps)")
-    p.add_argument("--top-n-temporal", type=int, help="top N species to plot (temporal_stickiness)")
-    p.add_argument("--sci-threshold", type=float, help="SCI threshold (migratory_classification)")
-    p.add_argument("--kurtosis-threshold", type=float, help="residual kurtosis threshold (migratory_classification)")
-    p.add_argument("--pmr-threshold", type=float, help="peak-to-median ratio threshold (migratory_classification)")
-    p.add_argument("--window-size", type=int, help="rolling window size in days (migratory_classification)")
-    p.add_argument("--min-solar-days", type=int, help="min days with >10 detections (solar_correlation)")
-    p.add_argument("--max-timeseries-species", type=int, help="max species to plot (daily_timeseries)")
+    p.add_argument("--min-confidence", type=float)
+    p.add_argument("--top-n-species", type=int)
+    p.add_argument("--top-n-temporal", type=int)
+    p.add_argument("--sci-threshold", type=float)
+    p.add_argument("--kurtosis-threshold", type=float)
+    p.add_argument("--pmr-threshold", type=float)
+    p.add_argument("--window-size", type=int)
+    p.add_argument("--min-solar-days", type=int)
+    p.add_argument("--max-timeseries-species", type=int)
 
 
 def build_parser() -> argparse.ArgumentParser:
-    ap = argparse.ArgumentParser(prog="app.cli", description="CEM bioacoustics compute CLI (Airflow-friendly)")
+    ap = argparse.ArgumentParser(prog="app.cli", description="CEM bioacoustics CLI")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    p = sub.add_parser("create-job"); p.add_argument("--geo"); p.set_defaults(func=cmd_create_job)
+    p = sub.add_parser("create-job")
+    p.add_argument("--project", required=True)
+    p.add_argument("--step", default="birdnet")
+    p.add_argument("--geo")
+    p.set_defaults(func=cmd_create_job)
 
     p = sub.add_parser("upload")
     p.add_argument("--job", required=True)
     p.add_argument("--kind", default="audio",
                    choices=["audio", "reference", "aggregate", "processed", "ebird", "static_noise", "rain_noise"])
-    p.add_argument("--spot", default=None, help="reference-file spot label")
-    p.add_argument("paths", nargs="+", help="file paths or globs")
+    p.add_argument("--spot", default=None)
+    p.add_argument("paths", nargs="+")
     p.set_defaults(func=cmd_upload)
 
-    p = sub.add_parser("run"); p.add_argument("--job", required=True)
-    p.add_argument("--step", required=True); _add_run_flags(p); p.set_defaults(func=cmd_run)
+    p = sub.add_parser("run")
+    p.add_argument("--job", required=True)
+    p.add_argument("--step", required=True)
+    _add_run_flags(p)
+    p.set_defaults(func=cmd_run)
 
-    p = sub.add_parser("run-all"); p.add_argument("--job", required=True)
-    _add_run_flags(p); p.set_defaults(func=cmd_run_all)
+    p = sub.add_parser("run-all")
+    p.add_argument("--job", required=True)
+    _add_run_flags(p)
+    p.set_defaults(func=cmd_run_all)
 
-    p = sub.add_parser("ingest"); p.add_argument("--audio", required=True)
-    p.add_argument("--step", default="all"); _add_run_flags(p); p.set_defaults(func=cmd_ingest)
+    p = sub.add_parser("ingest")
+    p.add_argument("--project", required=True)
+    p.add_argument("--audio", required=True)
+    p.add_argument("--step", default="all")
+    _add_run_flags(p)
+    p.set_defaults(func=cmd_ingest)
 
-    p = sub.add_parser("status"); p.add_argument("--job", required=True)
-    p.add_argument("--task", default=None); p.set_defaults(func=cmd_status)
+    p = sub.add_parser("status")
+    p.add_argument("--job", required=True)
+    p.add_argument("--task", default=None)
+    p.set_defaults(func=cmd_status)
 
     p = sub.add_parser("cleanup")
-    p.add_argument("--hours", type=float, default=None, help="override RETENTION_HOURS")
+    p.add_argument("--hours", type=float, default=None)
     p.set_defaults(func=cmd_cleanup)
+
     return ap
 
 
-def main(argv=None) -> int:
-    args = build_parser().parse_args(argv)
-    return args.func(args)
+def main() -> None:
+    ap = build_parser()
+    args = ap.parse_args()
+    raise SystemExit(args.func(args))
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()

@@ -32,6 +32,32 @@
     "assets": ["config.py", "file_metadata.py", "static_noise.wav", "rain_noise.wav"]
   },
   {
+    "id": "acoustic_indices",
+    "name": "Acoustic Indices + Box Plots",
+    "script_file": "acoustic_indices.py",
+    "version": "1.0.0",
+    "description": "Compute 6 acoustic indices (ADI, ACI, AEI, NDSI, MFC, CLS) from raw audio and generate per-index box plots across monitoring sites.",
+    "inputs": [
+      {
+        "type": "spot_date_range",
+        "label": "Select spots and date range",
+        "valid_extensions": [".wav"]
+      }
+    ],
+    "parameters": [
+      {
+        "id": "snr_db",
+        "label": "SNR for noise removal (dB)",
+        "type": "text",
+        "default": "18"
+      }
+    ],
+    "depends_on": [],
+    "outputs": { "master_csv": "acoustic_indices.csv" },
+    "aggregate_file": "indices_aggregate.csv",
+    "assets": ["config.py", "file_metadata.py", "static_noise.wav"]
+  },
+  {
     "id": "heatmaps",
     "name": "Species Activity Heatmaps",
     "script_file": "activity_heatmaps.py",

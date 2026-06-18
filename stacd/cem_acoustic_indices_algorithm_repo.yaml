@@ -1,0 +1,17 @@
+# Algorithm Instance - CEM Acoustic Indices
+# Synchronous API: blocks until analysis completes, returns STAC item(s).
+
+---
+!Algorithm_Instance
+type: CEM_Acoustic_Indices
+version: "1"
+assets:
+  code: "https://github.com/cem-bioacoustics/cem-backend"
+date: 2026-06-17 00:00:00
+execution_modes:
+  api:
+    enabled: true
+    priority: 1
+    url: "http://cem-backend:8000/api/v1/scripts/acoustic_indices"
+    method: POST
+    content_type: application/json

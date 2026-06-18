@@ -1,75 +1,139 @@
-"""Pydantic request/response models."""
+"""Pydantic request/response models -- per-step typed bodies.
+
+Every algorithm endpoint receives ONLY the parameters it actually uses.
+Common fields (project, spots, dates, spots_geo) are required on every
+request so Airflow / the UI can never accidentally omit them.
+"""
 from typing import Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
-class RunParams(BaseModel):
-    """Optional run-time overrides forwarded to config.apply_overrides()."""
-    spots: Optional[list[str]] = Field(
-        default=None, description="Spot names to keep (empty/None = all)."
+# --------------------------------------------------------------------------- #
+# Shared building-blocks
+# --------------------------------------------------------------------------- #
+class SpotGeo(BaseModel):
+    """Single spot with required geolocation."""
+    name: str = Field(..., description="Canonical spot name (e.g. 'SPOT1').")
+    lat: float = Field(..., description="Latitude (WGS-84).")
+    lon: float = Field(..., description="Longitude (WGS-84).")
+
+
+class BaseRunParams(BaseModel):
+    """Fields required by EVERY algorithm endpoint."""
+    model_config = ConfigDict(extra="ignore")
+
+    project: str = Field(
+        ..., description="Project folder name on server."
     )
-    start_date: Optional[str] = Field(
-        default=None, description="Inclusive start date, YYYY-MM-DD or YYYYMMDD."
+    spots: list[str] = Field(
+        ..., min_length=1,
+        description="Spot names to include in this run (at least one).",
     )
-    end_date: Optional[str] = Field(
-        default=None, description="Inclusive end date, YYYY-MM-DD or YYYYMMDD."
+    start_date: str = Field(
+        ..., description="Inclusive start date, YYYYMMDD or YYYY-MM-DD."
     )
-    snr_db: Optional[float] = Field(
-        default=None, description="BirdNET denoise SNR (dB). birdnet step only."
+    end_date: str = Field(
+        ..., description="Inclusive end date, YYYYMMDD or YYYY-MM-DD."
     )
-    # --- Per-step algorithm tunables (each applied by exactly one step) ---
-    min_confidence: Optional[float] = Field(
-        default=None, description="BirdNET minimum detection confidence, 0-1. birdnet step only."
-    )
-    top_n_species: Optional[int] = Field(
-        default=None, description="Top N species to plot. heatmaps step only."
-    )
-    top_n_temporal: Optional[int] = Field(
-        default=None, description="Top N species to plot. temporal_stickiness step only."
-    )
-    sci_threshold: Optional[float] = Field(
-        default=None, description="Seasonal Concentration Index threshold. migratory_classification only."
-    )
-    kurtosis_threshold: Optional[float] = Field(
-        default=None, description="Residual kurtosis threshold. migratory_classification only."
-    )
-    pmr_threshold: Optional[float] = Field(
-        default=None, description="Peak-to-median ratio threshold. migratory_classification only."
-    )
-    window_size: Optional[int] = Field(
-        default=None, description="Rolling window size in days. migratory_classification only."
-    )
-    min_solar_days: Optional[int] = Field(
-        default=None, description="Min days with >10 detections to include a species. solar_correlation only."
-    )
-    max_timeseries_species: Optional[int] = Field(
-        default=None, description="Max species to plot. daily_timeseries step only."
-    )
-    # --- Shared filter_utils tunables (all 6 analysis steps) ---
-    filter_confidence: Optional[float] = Field(
-        default=None, description="Min detection confidence for 3-step filter (default 0.3). All analysis steps."
-    )
-    filter_min_detections: Optional[int] = Field(
-        default=None, description="Min total detections per species for 3-step filter (default 10). All analysis steps."
-    )
-    spots_geo: Optional[list[dict]] = Field(
+    spots_geo: Optional[list[SpotGeo]] = Field(
         default=None,
-        description="Spot geolocation for STAC items: [{name, lat, lon}, ...]. "
-                    "Stored on the job and used as geometry/bbox; not a CLI flag.",
+        description="Geolocation for spots -- drives STAC geometry/bbox. Optional.",
     )
 
 
+# --------------------------------------------------------------------------- #
+# Per-step models
+# --------------------------------------------------------------------------- #
+class BirdnetParams(BaseRunParams):
+    """BirdNET species detection."""
+    snr_db: float = Field(default=18.0, description="Denoise SNR (dB).")
+    min_confidence: float = Field(
+        default=0.25, ge=0, le=1,
+        description="Minimum detection confidence (0-1).",
+    )
+    audio_spots: Optional[dict[str, str]] = Field(
+        default=None,
+        description="{filename: spot_name} mapping for uploaded audio.",
+        json_schema_extra={"example": {"recording_20240101_120000.wav": "SPOT1"}},
+    )
+
+
+class HeatmapsParams(BaseRunParams):
+    """Species activity heatmaps."""
+    top_n_species: int = Field(default=25, ge=1, description="Top N species to plot.")
+    filter_confidence: float = Field(default=0.3, ge=0, le=1, description="Min detection confidence.")
+    filter_min_detections: int = Field(default=10, ge=1, description="Min total detections per species.")
+
+
+class TemporalStickinessParams(BaseRunParams):
+    """Activity regularity (temporal)."""
+    top_n_temporal: int = Field(default=80, ge=1, description="Top N species to plot.")
+    filter_confidence: float = Field(default=0.3, ge=0, le=1, description="Min detection confidence.")
+    filter_min_detections: int = Field(default=10, ge=1, description="Min total detections per species.")
+
+
+class SpatialStickinessParams(BaseRunParams):
+    """Habitat affinity (spatial) -- requires >= 2 spots."""
+    filter_confidence: float = Field(default=0.3, ge=0, le=1, description="Min detection confidence.")
+    filter_min_detections: int = Field(default=10, ge=1, description="Min total detections per species.")
+
+
+class MigratoryClassificationParams(BaseRunParams):
+    """Migratory vs resident classification."""
+    sci_threshold: float = Field(default=0.9, description="Seasonal Concentration Index threshold.")
+    kurtosis_threshold: float = Field(default=15.0, description="Residual kurtosis threshold.")
+    pmr_threshold: float = Field(default=50.0, description="Peak-to-median ratio threshold.")
+    window_size: int = Field(default=60, ge=1, description="Rolling window size (days).")
+    filter_confidence: float = Field(default=0.3, ge=0, le=1, description="Min detection confidence.")
+    filter_min_detections: int = Field(default=10, ge=1, description="Min total detections per species.")
+
+
+class SolarCorrelationParams(BaseRunParams):
+    """Solar event correlation."""
+    min_solar_days: int = Field(default=5, ge=1, description="Min days with >10 detections.")
+    filter_confidence: float = Field(default=0.3, ge=0, le=1, description="Min detection confidence.")
+    filter_min_detections: int = Field(default=10, ge=1, description="Min total detections per species.")
+
+
+class DailyTimeseriesParams(BaseRunParams):
+    """Daily call time series."""
+    max_timeseries_species: int = Field(default=50, ge=1, description="Max species to plot.")
+    filter_confidence: float = Field(default=0.3, ge=0, le=1, description="Min detection confidence.")
+    filter_min_detections: int = Field(default=10, ge=1, description="Min total detections per species.")
+
+
+class AcousticIndicesParams(BaseRunParams):
+    """Acoustic indices computation + box plots (processes raw WAV files)."""
+    snr_db: float = Field(default=18.0, description="Denoise SNR (dB).")
+
+
+# Lookup for generic fallback route.
+STEP_MODELS: dict[str, type[BaseRunParams]] = {
+    "birdnet": BirdnetParams,
+    "acoustic_indices": AcousticIndicesParams,
+    "heatmaps": HeatmapsParams,
+    "temporal_stickiness": TemporalStickinessParams,
+    "spatial_stickiness": SpatialStickinessParams,
+    "migratory_classification": MigratoryClassificationParams,
+    "solar_correlation": SolarCorrelationParams,
+    "daily_timeseries": DailyTimeseriesParams,
+}
+
+
+# --------------------------------------------------------------------------- #
+# Response / utility models
+# --------------------------------------------------------------------------- #
 class TaskInfo(BaseModel):
     task_id: str
     step: str
-    status: str  # queued | running | success | failed
+    status: str
     created_at: str
     started_at: Optional[str] = None
     finished_at: Optional[str] = None
     returncode: Optional[int] = None
     error: Optional[str] = None
     params: dict = {}
-    results: list[str] = []  # result files relative to job root
+    results: list[str] = []
 
 
 class UploadedFile(BaseModel):
@@ -91,8 +155,8 @@ class JobSummary(BaseModel):
     has_aggregate: bool
     tasks: list[TaskInfo]
     results: list[str]
-    browse_url: Optional[str] = None  # file-browser deep link (item 11)
-    api_version: Optional[str] = None  # compute API version (item 12)
+    browse_url: Optional[str] = None
+    api_version: Optional[str] = None
 
 
 class CreateJobResponse(BaseModel):

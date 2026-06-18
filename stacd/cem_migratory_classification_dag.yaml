@@ -1,0 +1,53 @@
+--- !DAG
+id: cem_migratory_classification
+name: CEM Bioacoustics - Migratory Classification
+version: "1.0"
+description: "Single-node DAG. Classifies species as migratory vs resident using SCI, kurtosis, PMR metrics."
+params:
+  - project
+  - spots
+  - start_date
+  - end_date
+  - spots_geo
+  - sci_threshold
+  - kurtosis_threshold
+  - pmr_threshold
+  - window_size
+  - filter_confidence
+  - filter_min_detections
+
+alg_type_nodes:
+  - CEM_Migratory_Classification
+
+dataset_type_nodes: []
+
+--- !Algorithm_Type
+id: CEM_Migratory_Classification
+name: Migratory vs Resident Classification
+description: Uses Seasonal Concentration Index, residual kurtosis, and peak-to-median ratio to classify species.
+params:
+  - name: project
+    type: string
+  - name: spots
+    type: array
+  - name: start_date
+    type: string
+  - name: end_date
+    type: string
+  - name: spots_geo
+    type: array
+  - name: sci_threshold
+    type: number
+  - name: kurtosis_threshold
+    type: number
+  - name: pmr_threshold
+    type: number
+  - name: window_size
+    type: integer
+  - name: filter_confidence
+    type: number
+  - name: filter_min_detections
+    type: integer
+input_datasets: []
+outputs: []
+depends_on: []

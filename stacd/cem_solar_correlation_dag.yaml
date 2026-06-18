@@ -1,0 +1,44 @@
+--- !DAG
+id: cem_solar_correlation
+name: CEM Bioacoustics - Solar Event Correlation
+version: "1.0"
+description: "Single-node DAG. Correlates species call activity with sunrise/sunset times."
+params:
+  - project
+  - spots
+  - start_date
+  - end_date
+  - spots_geo
+  - min_solar_days
+  - filter_confidence
+  - filter_min_detections
+
+alg_type_nodes:
+  - CEM_Solar_Correlation
+
+dataset_type_nodes: []
+
+--- !Algorithm_Type
+id: CEM_Solar_Correlation
+name: Solar Event Correlation
+description: Correlates detection peaks with dawn/dusk. Outputs correlation plots per species.
+params:
+  - name: project
+    type: string
+  - name: spots
+    type: array
+  - name: start_date
+    type: string
+  - name: end_date
+    type: string
+  - name: spots_geo
+    type: array
+  - name: min_solar_days
+    type: integer
+  - name: filter_confidence
+    type: number
+  - name: filter_min_detections
+    type: integer
+input_datasets: []
+outputs: []
+depends_on: []
