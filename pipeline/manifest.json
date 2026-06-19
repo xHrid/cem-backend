@@ -29,7 +29,7 @@
     "depends_on": [],
     "outputs": { "master_csv": "birdnet_results.csv" },
     "aggregate_file": "birdnet_results.csv",
-    "assets": ["config.py", "file_metadata.py", "static_noise.wav", "rain_noise.wav"]
+    "assets": ["config.py", "file_metadata.py", "hw_profile.py", "static_noise.wav", "rain_noise.wav"]
   },
   {
     "id": "acoustic_indices",
@@ -55,7 +55,7 @@
     "depends_on": [],
     "outputs": { "master_csv": "acoustic_indices.csv" },
     "aggregate_file": "indices_aggregate.csv",
-    "assets": ["config.py", "file_metadata.py", "static_noise.wav"]
+    "assets": ["config.py", "file_metadata.py", "hw_profile.py", "static_noise.wav"]
   },
   {
     "id": "heatmaps",
