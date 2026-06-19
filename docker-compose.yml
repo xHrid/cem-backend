@@ -3,9 +3,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    # Published to DockerHub. `docker compose build` tags the image with this
-    # name; `docker compose push` then uploads it. Bump the version on release.
-    image: hridayansh/cem-backend:1.3.0
+    image: hridayansh/cem-backend:latest
     container_name: cem-backend
     ports:
       - "8000:8000"
