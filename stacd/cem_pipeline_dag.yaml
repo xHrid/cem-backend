@@ -1,0 +1,67 @@
+--- !DAG
+id: cem_pipeline
+name: cem_pipeline
+version: "2"
+group: cem
+description: "Unified bioacoustics analysis pipeline. Calls POST /api/v1/scripts with script name in body to run one of 8 analysis steps (BirdNET, acoustic indices, heatmaps, etc.) and returns STAC item(s)."
+params:
+  - script
+  - project
+  - spots
+  - start_date
+  - end_date
+  - spots_geo
+  - job_id
+  - snr_db
+  - min_confidence
+  - top_n_species
+  - top_n_temporal
+  - filter_confidence
+  - filter_min_detections
+  - sci_threshold
+  - kurtosis_threshold
+  - pmr_threshold
+  - window_size
+  - min_solar_days
+  - max_timeseries_species
+documentation:
+  description: "Triggers one of 8 CEM analysis scripts for a given project. Script name selects the step: birdnet, acoustic_indices, heatmaps, temporal_stickiness, spatial_stickiness, migratory_classification, solar_correlation, daily_timeseries. No root datasets required. User audio is uploaded per-project via the upload API."
+  outputs: "STAC item(s) per result file (CSVs, PNGs, heatmaps, plots)"
+alg_type_nodes:
+  - CEM_Pipeline
+dataset_type_nodes:
+  - CEM_Output
+
+--- !Algorithm_Type
+id: CEM_Pipeline
+name: CEM Bioacoustics Pipeline
+description: "Unified algorithm node. Dispatches to the correct analysis script based on the 'script' field. Returns STAC item(s) for each result file."
+params:
+  - script
+  - project
+  - spots
+  - start_date
+  - end_date
+  - spots_geo
+  - job_id
+  - snr_db
+  - min_confidence
+  - top_n_species
+  - top_n_temporal
+  - filter_confidence
+  - filter_min_detections
+  - sci_threshold
+  - kurtosis_threshold
+  - pmr_threshold
+  - window_size
+  - min_solar_days
+  - max_timeseries_species
+input_datasets: []
+outputs:
+  - CEM_Output
+
+--- !Dataset_Type
+id: CEM_Output
+name: CEM Pipeline Output
+description: "Analysis results from bioacoustics pipeline (detection CSVs, index plots, heatmaps, classification outputs)"
+format: STAC

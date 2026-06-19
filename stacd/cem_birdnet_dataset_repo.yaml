@@ -1,5 +1,0 @@
-# Dataset Repository - CEM BirdNET
-# No root datasets. User audio is uploaded per-project and stored temporarily.
-# All outputs are registered as STAC items in the API response.
-
-# (empty - no pre-registered datasets for this DAG)

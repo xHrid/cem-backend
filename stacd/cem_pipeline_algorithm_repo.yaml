@@ -1,0 +1,13 @@
+--- !Algorithm_Instance
+type: CEM_Pipeline
+version: "2"
+date: 2026-06-19
+assets:
+  code: "https://github.com/cem-bioacoustics/cem-backend"
+execution_modes:
+  api:
+    enabled: true
+    priority: 1
+    url: "http://cem-backend:8000/api/v1/scripts"
+  docker:
+    enabled: false

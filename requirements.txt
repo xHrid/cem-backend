@@ -1,6 +1,7 @@
 numpy
 pandas
 librosa
+resampy
 soundfile
 scipy
 tqdm

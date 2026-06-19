@@ -226,11 +226,16 @@ def _read_index(job_id: str) -> Optional[dict]:
 # Public API
 # ---------------------------------------------------------------------------
 
-def create_job(project_name: str, script: str) -> Job:
-    """Create a new job workspace inside the project's script directory."""
+def create_job(project_name: str, script: str, job_id: str | None = None) -> Job:
+    """Create a new job workspace inside the project's script directory.
+
+    If *job_id* is supplied (e.g. by the frontend via Airflow) it is used
+    as-is; otherwise a random one is generated.
+    """
     with _LOCK:
         s = get_settings()
-        job_id = new_id("job_")
+        if job_id is None:
+            job_id = new_id("job_")
         root = s.projects_dir / project_name / script / job_id
         job = Job(root, job_id)
         job.audio_dir.mkdir(parents=True, exist_ok=True)

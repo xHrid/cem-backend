@@ -7,7 +7,7 @@ CEM Server API -- clean 3-group design.
 """
 import json
 import os
-import uuid
+
 import zipfile
 from pathlib import Path
 from typing import Optional
@@ -160,7 +160,7 @@ def steps():
 
 
 def _extract_script_params(body: dict) -> dict:
-    common = {"script", "project", "spots", "start_date", "end_date", "spots_geo"}
+    common = {"script", "project", "spots", "start_date", "end_date", "spots_geo", "job_id"}
     return {k: v for k, v in body.items() if k not in common and v is not None}
 
 
@@ -182,7 +182,21 @@ def _browse_href(job: jobstore.Job, rel: str) -> Optional[str]:
     return None
 
 
+def _resolve_script_name(name: str) -> str:
+    """Accept step ID ('birdnet'), filename ('birdnet_predictions.py'), or
+    basename without extension ('birdnet_predictions') and return the step ID."""
+    if name in meta.SCRIPTS:
+        return name
+    # Try matching by script filename (with or without .py)
+    bare = name.removesuffix(".py")
+    for sid, filename in meta.SCRIPTS.items():
+        if filename.removesuffix(".py") == bare:
+            return sid
+    return name  # fall through — will fail validation below
+
+
 def _run_script(script_name: str, body: dict):
+    script_name = _resolve_script_name(script_name)
     if not meta.is_valid_step(script_name):
         raise HTTPException(404, f"Unknown script '{script_name}'. Options: {list(meta.SCRIPTS)}")
 
@@ -201,7 +215,8 @@ def _run_script(script_name: str, body: dict):
     if proj is None:
         raise HTTPException(404, f"Project '{project}' not found.")
 
-    job = jobstore.create_job(project, script_name)
+    client_job_id = body.get("job_id") or None
+    job = jobstore.create_job(project, script_name, job_id=client_job_id)
     stats = proj.populate_job(job, spots=spots, start_date=start_date, end_date=end_date)
 
     if spots_geo:
@@ -214,8 +229,8 @@ def _run_script(script_name: str, body: dict):
     if end_date:
         run_params["end_date"] = end_date
 
-    task_id = uuid.uuid4().hex
     task = runner.run_sync(job, script_name, run_params)
+    task_id = task["task_id"]
 
     if task["status"] != "success":
         code, etype = _classify_error(task.get("error"))
