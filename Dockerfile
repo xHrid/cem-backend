@@ -1,12 +1,15 @@
 # CEM BirdNET Pipeline API
-# Default build = CPU. BirdNET runs on the TFLite interpreter (CPU), so a GPU
-# image gives ~no speedup for inference; the optional GPU bits below exist only
-# for users who later swap in a GPU-delegated model. See README.
+# Default build = CPU. For GPU acceleration, build with:
+#   docker build --build-arg BASE_IMAGE=nvidia/cuda:12.2.0-runtime-ubuntu22.04 \
+#                --build-arg TF_PACKAGE=tensorflow --build-arg BN_EXTRA=[and-cuda] .
 #
-# Base image is pinned to Debian 12 "bookworm" (stable). The unpinned
-# python:3.10-slim tag can resolve to "trixie" (Debian testing), whose mirrors
-# are slower/less reliable and were the cause of the apt download stalls.
-FROM python:3.10-slim-bookworm
+# The pipeline auto-detects GPU at runtime. If NVIDIA GPU + birdnet[and-cuda]
+# are present it uses the ProtoBuf model on GPU; otherwise falls back to
+# birdnetlib TFLite on CPU.
+#
+# Base image pinned to Debian 12 "bookworm" (stable).
+ARG BASE_IMAGE=python:3.10-slim-bookworm
+FROM ${BASE_IMAGE}
 
 ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
@@ -35,7 +38,8 @@ RUN pip install --upgrade pip \
     && pip install --retries 8 --timeout 180 -r requirements-server.txt
 
 # --- Application code ---
-COPY pipeline ./pipeline
+# Pipeline scripts are NOT baked in -- mount them at /app/pipeline (or set
+# PIPELINE_DIR) so code changes don't require a Docker rebuild.
 COPY server/app ./app
 
 # Persist uploads + results here (compose mounts a named volume).

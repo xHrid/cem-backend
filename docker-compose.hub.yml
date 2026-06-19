@@ -32,4 +32,6 @@ services:
       # Jobs + results land here on the host. Set HOST_DATA_DIR for a shared
       # deployment dir (e.g. /srv/cem/data); defaults to ./data next to this file.
       - ${HOST_DATA_DIR:-./data}:/data
+      # Pipeline scripts — mount externally so code changes don't need a rebuild.
+      - ${HOST_PIPELINE_DIR:-./pipeline}:/app/pipeline
     restart: unless-stopped

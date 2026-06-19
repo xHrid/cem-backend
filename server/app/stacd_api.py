@@ -2,7 +2,7 @@
 CEM Server API -- clean 3-group design.
 
   1. Upload -- project-level file storage.
-  2. Scripts -- synchronous algorithm execution with typed Pydantic bodies.
+  2. Scripts -- single synchronous algorithm endpoint (script name in body).
   3. Polling & download -- job status, results, files.
 """
 import json
@@ -20,18 +20,6 @@ from . import pipeline_meta as meta
 from . import projects as projectstore
 from . import runner
 from . import stac
-from .schemas import (
-    AcousticIndicesParams,
-    BaseRunParams,
-    BirdnetParams,
-    DailyTimeseriesParams,
-    HeatmapsParams,
-    MigratoryClassificationParams,
-    SolarCorrelationParams,
-    SpatialStickinessParams,
-    STEP_MODELS,
-    TemporalStickinessParams,
-)
 from .settings import get_settings
 
 router = APIRouter(prefix="/api/v1", tags=["cem"])
@@ -172,7 +160,7 @@ def steps():
 
 
 def _extract_script_params(body: dict) -> dict:
-    common = {"project", "spots", "start_date", "end_date", "spots_geo"}
+    common = {"script", "project", "spots", "start_date", "end_date", "spots_geo"}
     return {k: v for k, v in body.items() if k not in common and v is not None}
 
 
@@ -277,53 +265,13 @@ def _run_script(script_name: str, body: dict):
     return resp
 
 
-# ---- named script wrappers (typed bodies -> Swagger shows all params) ----
-
-@router.post("/scripts/birdnet", summary="BirdNET species detection")
-def run_birdnet(body: BirdnetParams):
-    return _run_script("birdnet", body.model_dump())
-
-
-@router.post("/scripts/acoustic_indices", summary="Acoustic indices + box plots")
-def run_acoustic_indices(body: AcousticIndicesParams):
-    return _run_script("acoustic_indices", body.model_dump())
-
-
-@router.post("/scripts/heatmaps", summary="Species activity heatmaps")
-def run_heatmaps(body: HeatmapsParams):
-    return _run_script("heatmaps", body.model_dump())
-
-
-@router.post("/scripts/temporal_stickiness", summary="Temporal stickiness")
-def run_temporal_stickiness(body: TemporalStickinessParams):
-    return _run_script("temporal_stickiness", body.model_dump())
-
-
-@router.post("/scripts/spatial_stickiness", summary="Spatial stickiness")
-def run_spatial_stickiness(body: SpatialStickinessParams):
-    return _run_script("spatial_stickiness", body.model_dump())
-
-
-@router.post("/scripts/migratory_classification", summary="Migratory vs resident classification")
-def run_migratory_classification(body: MigratoryClassificationParams):
-    return _run_script("migratory_classification", body.model_dump())
-
-
-@router.post("/scripts/solar_correlation", summary="Solar event correlation")
-def run_solar_correlation(body: SolarCorrelationParams):
-    return _run_script("solar_correlation", body.model_dump())
-
-
-@router.post("/scripts/daily_timeseries", summary="Daily call time series")
-def run_daily_timeseries(body: DailyTimeseriesParams):
-    return _run_script("daily_timeseries", body.model_dump())
-
-
-# ---- generic fallback (registered LAST) ----
-
-@router.post("/scripts/{name}", summary="Run any script (generic fallback)")
-def run_script_generic(name: str, body: dict = Body(...)):
-    return _run_script(name, body)
+@router.post("/scripts", summary="Run a pipeline script (pass 'script' in body)")
+def run_script(body: dict = Body(...)):
+    script_name = body.get("script")
+    if not script_name:
+        raise HTTPException(400, "\"script\" is required in request body. "
+                            f"Options: {list(meta.SCRIPTS)}")
+    return _run_script(script_name, body)
 
 
 # =========================================================================== #

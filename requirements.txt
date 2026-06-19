@@ -9,4 +9,15 @@ seaborn
 birdnetlib
 astral
 pytz
-tensorflow-cpu  # CPU-only: ~250MB vs 1.7GB, same `tensorflow` namespace birdnetlib needs
+psutil
+
+# TensorFlow: CPU-only by default (~250 MB). For GPU support, replace with
+# `tensorflow` (includes CUDA) and install `birdnet[and-cuda]` below.
+tensorflow-cpu
+
+# Optional GPU-accelerated inference. Install `birdnet` (official library) to
+# enable the ProtoBuf model path. On GPU hosts install `birdnet[and-cuda]`
+# instead and replace `tensorflow-cpu` with `tensorflow` above.
+# The pipeline auto-detects GPU and falls back to birdnetlib (TFLite/CPU)
+# when birdnet is absent.
+birdnet

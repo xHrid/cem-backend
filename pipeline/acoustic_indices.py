@@ -13,6 +13,13 @@ Indices computed (Section 3.2.2):
   NDSI — Normalized Difference Soundscape Index ((bio − anthro) / (bio + anthro))
   MFC  — Mid-Frequency Cover (fraction of frames with dominant 2–8 kHz energy)
   CLS  — Cluster Count (mean spectral peak count per frame)
+
+Performance optimizations (vs. original):
+  - Hardware-adaptive parallelism via hw_profile (CPU cores, RAM)
+  - Combined denoise: single STFT pass for noise removal
+  - Faster resampling (kaiser_fast instead of kaiser_best)
+  - Vectorized CLS computation (eliminates per-column Python loop)
+  - Pre-computed noise STFT per worker
 """
 
 import os
@@ -24,15 +31,17 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import seaborn as sns
-from scipy.signal import spectrogram, find_peaks
+from scipy.signal import spectrogram
 from scipy.stats import entropy
 from datetime import date
 from tqdm import tqdm
 from concurrent.futures import ProcessPoolExecutor, as_completed
-import multiprocessing
 
 import config as cfg
 from file_metadata import parse_filename, build_record
+from hw_profile import get_profile, print_profile
+
+_RESAMPLE_TYPE = "kaiser_fast"
 
 
 # =============================================================================
@@ -81,39 +90,61 @@ def list_files(
 # PART 2 — MAIN PIPELINE
 # =============================================================================
 
-# ---- denoising (identical to birdnet_predictions._denoise) ----
-def _denoise(audio: np.ndarray, noise_ref: np.ndarray,
-             sr: int | None = None, snr_db: float | None = None) -> np.ndarray:
+# ── Combined denoise (single STFT pass) ─────────────────────────────────────
+
+def _denoise_combined(audio: np.ndarray,
+                      noise_clips: list[np.ndarray],
+                      noise_stfts: list[np.ndarray] | None = None,
+                      sr: int | None = None,
+                      snr_db: float | None = None) -> np.ndarray:
+    """Remove noise sources in a single STFT pass."""
     sr = cfg.TARGET_SR if sr is None else sr
     snr_db = cfg.SNR_DB if snr_db is None else snr_db
-    if len(noise_ref) > len(audio):
-        noise_ref = noise_ref[:len(audio)]
-    else:
-        noise_ref = np.pad(noise_ref, (0, len(audio) - len(noise_ref)), "wrap")
-
-    audio_power = np.mean(audio ** 2)
-    noise_power = np.mean(noise_ref ** 2)
-    if noise_power == 0:
-        return audio
-    desired_noise_power = audio_power / (10 ** (snr_db / 10))
-    noise_ref_scaled = noise_ref * np.sqrt(desired_noise_power / noise_power)
-
-    audio_td = audio - noise_ref_scaled
     n_fft, hop = 2048, 512
-    stft = librosa.stft(audio_td, n_fft=n_fft, hop_length=hop)
+
+    cleaned = audio.copy()
+    for noise_ref in noise_clips:
+        if len(noise_ref) > len(cleaned):
+            nr = noise_ref[:len(cleaned)]
+        else:
+            nr = np.pad(noise_ref, (0, len(cleaned) - len(noise_ref)), "wrap")
+
+        audio_power = np.mean(cleaned ** 2)
+        noise_power = np.mean(nr ** 2)
+        if noise_power == 0:
+            continue
+        desired_noise_power = audio_power / (10 ** (snr_db / 10))
+        nr_scaled = nr * np.sqrt(desired_noise_power / noise_power)
+        cleaned = cleaned - nr_scaled
+
+    stft = librosa.stft(cleaned, n_fft=n_fft, hop_length=hop)
     magnitude, phase = np.abs(stft), np.angle(stft)
 
-    noise_stft = librosa.stft(noise_ref, n_fft=n_fft, hop_length=hop)
-    noise_threshold = np.mean(np.abs(noise_stft), axis=1, keepdims=True) * 1.2
-    gated_mag = np.where(magnitude > noise_threshold, magnitude, 0)
+    combined_threshold = np.zeros((magnitude.shape[0], 1), dtype=np.float32)
+    if noise_stfts:
+        for ns in noise_stfts:
+            threshold = np.mean(np.abs(ns), axis=1, keepdims=True) * 1.2
+            combined_threshold = np.maximum(combined_threshold, threshold)
+    else:
+        for noise_ref in noise_clips:
+            if len(noise_ref) > len(audio):
+                nr = noise_ref[:len(audio)]
+            else:
+                nr = np.pad(noise_ref, (0, len(audio) - len(noise_ref)), "wrap")
+            ns = librosa.stft(nr, n_fft=n_fft, hop_length=hop)
+            threshold = np.mean(np.abs(ns), axis=1, keepdims=True) * 1.2
+            combined_threshold = np.maximum(combined_threshold, threshold)
+
+    gated_mag = np.where(magnitude > combined_threshold, magnitude, 0)
     return librosa.istft(gated_mag * np.exp(1j * phase), hop_length=hop)
 
 
-# ---- index computation ----
+# ── Index computation (vectorized CLS) ──────────────────────────────────────
+
 def compute_acoustic_indices(y: np.ndarray, sr: int):
     """Compute ADI, ACI, AEI, NDSI, MFC, CLS from an audio segment."""
     f, t, Sxx = spectrogram(y, fs=sr, nperseg=1024, noverlap=512)
-    Sxx += 1e-10  # avoid log(0)
+    Sxx += 1e-10
 
     # ADI: Shannon entropy of frequency band energy
     S_norm = Sxx / Sxx.sum(axis=0, keepdims=True)
@@ -142,29 +173,30 @@ def compute_acoustic_indices(y: np.ndarray, sr: int):
     S_total = Sxx.sum(axis=0)
     MFC = np.mean(S_mid > 0.2 * S_total)
 
-    # CLS: cluster count (mean peak count per frame)
+    # CLS: cluster count — vectorized (no per-column Python loop)
     frame_maxes = Sxx.max(axis=0, keepdims=True) + 1e-10
     Sxx_norm = Sxx / frame_maxes
-    peak_counts = np.empty(Sxx_norm.shape[1], dtype=np.int32)
-    for col in range(Sxx_norm.shape[1]):
-        peaks, _ = find_peaks(Sxx_norm[:, col], height=0.5)
-        peak_counts[col] = len(peaks)
+    # A peak = local max above 0.5: value > left neighbor AND > right neighbor AND > 0.5
+    above_thresh = Sxx_norm[1:-1, :] > 0.5
+    gt_left = Sxx_norm[1:-1, :] > Sxx_norm[:-2, :]
+    gt_right = Sxx_norm[1:-1, :] > Sxx_norm[2:, :]
+    peak_counts = (above_thresh & gt_left & gt_right).sum(axis=0)
     CLS = peak_counts.mean()
 
     return ADI, ACI, AEI, NDSI, MFC, CLS
 
 
-def _analyze_file(filepath, noise_clip):
+def _analyze_file(filepath, noise_clips, noise_stfts):
     """Load, denoise, segment, compute indices for one WAV file."""
     audio_raw, orig_sr = sf.read(filepath, dtype="float32")
     if audio_raw.ndim > 1:
         audio_raw = audio_raw.mean(axis=1)
     if orig_sr != cfg.TARGET_SR:
-        audio_raw = librosa.resample(y=audio_raw, orig_sr=orig_sr, target_sr=cfg.TARGET_SR)
+        audio_raw = librosa.resample(y=audio_raw, orig_sr=orig_sr,
+                                     target_sr=cfg.TARGET_SR, res_type=_RESAMPLE_TYPE)
 
-    audio_clean = _denoise(audio_raw, noise_clip)
+    audio_clean = _denoise_combined(audio_raw, noise_clips, noise_stfts)
 
-    # Segment into 2-minute chunks (same as uploaded 05 script)
     sr = cfg.TARGET_SR
     two_min = int(120 * sr)
     segments = []
@@ -186,18 +218,25 @@ def _analyze_file(filepath, noise_clip):
     return results
 
 
-# ---- worker-local state ----
-_worker_noise = None
+# ── Worker state ─────────────────────────────────────────────────────────────
+
+_worker_noise_clips = None
+_worker_noise_stfts = None
 
 
 def _init_worker(noise_path):
-    global _worker_noise
-    _worker_noise, _ = sf.read(noise_path, dtype="float32")
-    if _worker_noise.ndim > 1:
-        _worker_noise = _worker_noise.mean(axis=1)
-    noise_sr = sf.info(noise_path).samplerate
-    if noise_sr != cfg.TARGET_SR:
-        _worker_noise = librosa.resample(y=_worker_noise, orig_sr=noise_sr, target_sr=cfg.TARGET_SR)
+    global _worker_noise_clips, _worker_noise_stfts
+    n_fft, hop = 2048, 512
+
+    clip, clip_sr = sf.read(noise_path, dtype="float32")
+    if clip.ndim > 1:
+        clip = clip.mean(axis=1)
+    if clip_sr != cfg.TARGET_SR:
+        clip = librosa.resample(y=clip, orig_sr=clip_sr,
+                                target_sr=cfg.TARGET_SR, res_type=_RESAMPLE_TYPE)
+
+    _worker_noise_clips = [clip]
+    _worker_noise_stfts = [librosa.stft(clip, n_fft=n_fft, hop_length=hop)]
 
 
 def _process_single_file(item):
@@ -205,7 +244,7 @@ def _process_single_file(item):
     rec = build_record(filepath, spot=spot_override)
     filename = rec["filename"]
     try:
-        seg_results = _analyze_file(filepath, _worker_noise)
+        seg_results = _analyze_file(filepath, _worker_noise_clips, _worker_noise_stfts)
         if seg_results:
             for r in seg_results:
                 r["filename"] = rec["filename"]
@@ -239,9 +278,11 @@ def run_pipeline(file_list, aggregate_path, processed_files_path, spot_overrides
         print("No new files to process.")
         return pd.DataFrame()
 
-    total_cpus = multiprocessing.cpu_count()
-    n_workers = max(1, min(total_cpus // 2, 4))
-    print(f"Parallelism: {n_workers} workers ({total_cpus} CPUs)")
+    profile = get_profile()
+    print_profile(profile)
+
+    n_workers = profile["indices_workers"]
+    print(f"Parallelism: {n_workers} workers ({profile['cpus']} CPUs, {profile['ram_gb']} GB RAM)")
 
     all_results = []
     processed_this_run = set()
@@ -297,7 +338,6 @@ def write_output_and_plots(aggregate_path, output_dir, input_directories,
         print("Aggregate file is empty.")
         return
 
-    # Filter by input directories
     if "filepath" in df.columns:
         abs_dirs = [os.path.abspath(d) for d in input_directories]
         in_dirs = df["filepath"].apply(
@@ -307,7 +347,6 @@ def write_output_and_plots(aggregate_path, output_dir, input_directories,
         )
         df = df[in_dirs]
 
-    # Date filter
     if "date" in df.columns:
         dts = pd.to_datetime(df["date"], errors="coerce")
         start_ts = pd.Timestamp(date_start)
@@ -318,18 +357,15 @@ def write_output_and_plots(aggregate_path, output_dir, input_directories,
         print("No data matches requested directories + date range.")
         return
 
-    # Write output CSV
     output_csv = os.path.join(output_dir, "acoustic_indices.csv")
     df.to_csv(output_csv, index=False)
     print(f"Output: {len(df)} rows -> {output_csv}")
 
-    # Prepare Spot column for plotting
     if "spot" in df.columns:
         df["Spot"] = df["spot"].astype(str).str.strip()
     else:
         df["Spot"] = "Unknown"
 
-    # Generate box plots for each index
     print("Generating box plots...")
     for index_name in INDICES_TO_PLOT:
         if index_name not in df.columns:
@@ -353,7 +389,6 @@ def write_output_and_plots(aggregate_path, output_dir, input_directories,
         )
         plt.close()
 
-    # Summary statistics
     summary_rows = []
     for index_name in INDICES_TO_PLOT:
         if index_name in df.columns:
@@ -382,7 +417,6 @@ def main():
         input_file_list=cfg.INPUT_FILE_LIST,
     )
 
-    # Spot overrides (same logic as birdnet)
     spot_overrides = {}
     spots_aligned = list(cfg.INPUT_FILE_SPOTS) + [""] * max(0, len(cfg.INPUT_FILE_LIST) - len(cfg.INPUT_FILE_SPOTS))
     for pth, sp in zip(cfg.INPUT_FILE_LIST, spots_aligned):
