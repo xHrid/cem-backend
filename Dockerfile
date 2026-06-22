@@ -20,11 +20,26 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHON_BIN=python
 
 # System libs: soundfile/librosa need libsndfile + ffmpeg; libgomp for TF/sklearn.
-# Acquire::Retries makes apt survive a flaky/slow mirror instead of aborting.
-RUN apt-get update -o Acquire::Retries=8 \
-    && apt-get install -y --no-install-recommends -o Acquire::Retries=8 \
-        libsndfile1 ffmpeg libgomp1 \
-    && rm -rf /var/lib/apt/lists/*
+#
+# apt hardening -- fixes the "Could not connect to deb.debian.org ... connection
+# timed out" / "Unable to locate package" failures seen on some networks:
+#   * ForceIPv4        avoids hangs where the host advertises but can't route IPv6
+#   * https:// mirrors  work where plain HTTP (port 80) egress is firewalled
+#                       (ca-certificates already ships in the python:*-slim base)
+#   * Retries/Timeout   survive a flaky or slow mirror instead of aborting
+RUN set -eux; \
+    printf '%s\n' \
+        'Acquire::ForceIPv4 "true";' \
+        'Acquire::Retries "8";' \
+        'Acquire::http::Timeout "30";' \
+        'Acquire::https::Timeout "30";' \
+        > /etc/apt/apt.conf.d/99-cem-network; \
+    sed -i 's|http://deb.debian.org|https://deb.debian.org|g; s|http://security.debian.org|https://security.debian.org|g' \
+        /etc/apt/sources.list /etc/apt/sources.list.d/debian.sources 2>/dev/null || true; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+        libsndfile1 ffmpeg libgomp1; \
+    rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 

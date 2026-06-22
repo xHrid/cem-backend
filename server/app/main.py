@@ -12,12 +12,11 @@ Flow:
      logs and downloads.
 
 All routes live in stacd_api.router under /api/v1. This module wires the app,
-CORS, the retention sweeper, and the unauthenticated health check.
+the retention sweeper, and the unauthenticated health check.
 """
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
 
 from . import pipeline_meta as meta
 from . import retention
@@ -43,15 +42,6 @@ app = FastAPI(
 # The only API surface: synchronous algorithm + job routes under /api/v1.
 app.include_router(stacd_api.router)
 
-# Allow the browser-based static site (different origin) to call this API.
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=get_settings().ALLOWED_ORIGINS,
-    allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
-    expose_headers=["Content-Disposition"],
-)
 
 
 # --------------------------------------------------------------------------- #
