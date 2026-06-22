@@ -51,8 +51,6 @@ class Job:
     @property
     def audio_dir(self) -> Path: return self.input_dir / "audio"
     @property
-    def reference_dir(self) -> Path: return self.input_dir / "reference"
-    @property
     def audio_spots_path(self) -> Path: return self.input_dir / "audio_spots.json"
     @property
     def geo_path(self) -> Path: return self.input_dir / "geo.json"
@@ -135,11 +133,6 @@ class Job:
                 return []
         return []
 
-    # ---- reference spots (legacy compat — always empty for CEM) ----
-    def get_reference_spots(self) -> dict:
-        """Reference audio mapping. CEM doesn't use pre-loaded reference files."""
-        return {}
-
     def set_geo(self, geo: Optional[list]) -> None:
         if not geo:
             return
@@ -176,6 +169,8 @@ class Job:
                 "finished_at": None,
                 "returncode": None,
                 "error": None,
+                "error_code": None,
+                "stac_warning": None,
                 "params": params,
                 "results": [],
             }
@@ -197,6 +192,19 @@ class Job:
             if t["task_id"] == task_id:
                 return t
         return None
+
+    # ---- dispatch metadata (Airflow run tracking) ----
+    def set_dispatch(self, info: dict) -> None:
+        """Merge dispatch tracking (mode, dag_run_id, state, error) into job.json."""
+        with _LOCK:
+            meta = self._read()
+            d = meta.get("dispatch") or {}
+            d.update(info)
+            meta["dispatch"] = d
+            self._write(meta)
+
+    def get_dispatch(self) -> dict:
+        return self.read().get("dispatch") or {}
 
 
 # ---------------------------------------------------------------------------
@@ -226,18 +234,24 @@ def _read_index(job_id: str) -> Optional[dict]:
 # Public API
 # ---------------------------------------------------------------------------
 
-def create_job(project_name: str, script: str, job_id: str | None = None) -> Job:
-    """Create a new job workspace inside the project's script directory.
+def create_job(project_name: str, script: str, job_id: str) -> Job:
+    """Create (or attach to) a job workspace inside the project's script dir.
 
-    If *job_id* is supplied (e.g. by the frontend via Airflow) it is used
-    as-is; otherwise a random one is generated.
+    The frontend mints *job_id* and passes it in; it is used as-is. Creation is
+    idempotent: if a job with this id already exists, the existing workspace and
+    its task history are returned untouched (never re-initialised), so a repeat
+    call can never clobber prior tasks/results.
     """
+    if not job_id:
+        raise ValueError("job_id is required.")
     with _LOCK:
         s = get_settings()
-        if job_id is None:
-            job_id = new_id("job_")
         root = s.projects_dir / project_name / script / job_id
         job = Job(root, job_id)
+        if job.exists():
+            # Idempotent: refresh the index (cheap) and return as-is.
+            _write_index(job_id, project_name, script, root)
+            return job
         job.audio_dir.mkdir(parents=True, exist_ok=True)
         job.work_dir.mkdir(parents=True, exist_ok=True)
         job.results_dir.mkdir(parents=True, exist_ok=True)

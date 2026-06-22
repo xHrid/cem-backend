@@ -8,10 +8,7 @@ services:
     ports:
       - "8000:8000"
     environment:
-      API_KEY: ${API_KEY:-changeme}
-      REQUIRE_AUTH: ${REQUIRE_AUTH:-true}
       MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-2048}
-      MAX_CONCURRENT_TASKS: ${MAX_CONCURRENT_TASKS:-2}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-*}
       BIRDNET_MAX_WORKERS: ${BIRDNET_MAX_WORKERS:-2}
       API_VERSION: ${API_VERSION:-1.1.0}
@@ -23,6 +20,12 @@ services:
       # Output retention (item 15). Cluster = compute, not storage. 0 disables.
       RETENTION_HOURS: ${RETENTION_HOURS:-168}
       RETENTION_SWEEP_MINUTES: ${RETENTION_SWEEP_MINUTES:-60}
+      # Airflow dispatch (optional). Blank AIRFLOW_BASE_URL = run locally.
+      AIRFLOW_BASE_URL: ${AIRFLOW_BASE_URL:-}
+      AIRFLOW_USERNAME: ${AIRFLOW_USERNAME:-admin}
+      AIRFLOW_PASSWORD: ${AIRFLOW_PASSWORD:-admin}
+      AIRFLOW_DAG_ID: ${AIRFLOW_DAG_ID:-cem_pipeline}
+      AIRFLOW_TIMEOUT: ${AIRFLOW_TIMEOUT:-10}
     volumes:
       - ${HOST_DATA_DIR:-./data}:/data
       - ./pipeline:/app/pipeline

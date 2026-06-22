@@ -14,14 +14,10 @@ from .settings import get_settings
 from . import pipeline_meta as meta
 
 
-def _newest_mtime(path: Path) -> float:
-    newest = path.stat().st_mtime
-    for p in path.rglob("*"):
-        try:
-            newest = max(newest, p.stat().st_mtime)
-        except OSError:
-            continue
-    return newest
+def _last_activity(job_dir: Path) -> float:
+    """Job last-activity time. job.json is rewritten on every task update, so its
+    mtime tracks activity in O(1) — no need to walk the whole tree each sweep."""
+    return (job_dir / "job.json").stat().st_mtime
 
 
 def sweep_once(retention_hours: float | None = None) -> list[str]:
@@ -47,7 +43,7 @@ def sweep_once(retention_hours: float | None = None) -> list[str]:
                 if not job_dir.is_dir() or not (job_dir / "job.json").is_file():
                     continue
                 try:
-                    if _newest_mtime(job_dir) < cutoff:
+                    if _last_activity(job_dir) < cutoff:
                         shutil.rmtree(job_dir, ignore_errors=True)
                         idx = s.jobs_index_dir / f"{job_dir.name}.json"
                         idx.unlink(missing_ok=True)

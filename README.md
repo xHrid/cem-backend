@@ -35,9 +35,9 @@ mkdir cem-bioacoustics && cd cem-bioacoustics
 curl -O https://raw.githubusercontent.com/xHrid/cem-backend/main/docker-compose.hub.yml
 curl -O https://raw.githubusercontent.com/xHrid/cem-backend/main/.env.example
 
-# 2. Set your API key
+# 2. Create your env file
 cp .env.example .env
-# Open .env and change API_KEY to a long random string
+# Open .env and adjust ALLOWED_ORIGINS / paths as needed
 
 # 3. Start the server
 docker compose -f docker-compose.hub.yml up -d
@@ -58,7 +58,7 @@ Use this when you want to edit pipeline scripts or server code.
 git clone https://github.com/xHrid/cem-backend.git
 cd cem-backend
 
-cp .env.example .env   # set API_KEY
+cp .env.example .env   # adjust as needed
 
 docker compose up --build
 ```
@@ -73,12 +73,9 @@ Edit `.env` (copied from `.env.example`). Key variables:
 
 | Variable | Default | Description |
 |---|---|---|
-| `API_KEY` | `changeme` | Secret key sent in the `X-API-Key` header. **Change this.** |
-| `REQUIRE_AUTH` | `true` | Set `false` to disable auth (local dev only). |
 | `ALLOWED_ORIGINS` | `*` | CORS origins allowed to call the API. Set to your frontend URL in production. |
 | `HOST_DATA_DIR` | `./data` | Where uploaded audio and results are stored on the host. |
 | `MAX_UPLOAD_MB` | `2048` | Upload size cap per file. |
-| `MAX_CONCURRENT_TASKS` | `2` | Max parallel script runs. |
 | `BIRDNET_MAX_WORKERS` | `2` | BirdNET worker processes. Each loads its own TensorFlow model (~500 MB). Lower to `1` if it crashes with `BrokenProcessPool`. |
 | `RETENTION_HOURS` | `168` | Delete job directories older than this many hours. `0` disables cleanup. |
 
@@ -89,26 +86,27 @@ See `.env.example` for the full list including STAC and file-browser options.
 ## API usage example
 
 ```bash
-KEY="your-api-key"
 BASE="http://localhost:8000"
+PROJECT="demo"
+JOB="job_$(openssl rand -hex 6)"   # client mints the job_id
 
-# Upload audio files — returns a job_id
-JOB=$(curl -s -H "X-API-Key: $KEY" \
-  -F files=@recording1.wav \
-  -F files=@recording2.wav \
-  $BASE/api/v1/datasets/audio | python -c "import sys,json;print(json.load(sys.stdin)['job_id'])")
+# Upload audio files into a project spot
+curl -s -F project=$PROJECT -F spot=SPOT1 \
+  -F files=@recording1.wav -F files=@recording2.wav \
+  $BASE/api/v1/projects/upload/audio
 
 # Run BirdNET (blocks until done, returns STAC item)
-curl -s -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
-  -d '{"snr_db":18}' \
-  $BASE/api/v1/jobs/$JOB/birdnet
+curl -s -H "Content-Type: application/json" \
+  -d "{\"script\":\"birdnet\",\"project\":\"$PROJECT\",\"spots\":[\"SPOT1\"],\"job_id\":\"$JOB\",\"snr_db\":18}" \
+  $BASE/api/v1/scripts
 
-# Run an analysis
-curl -s -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
-  -d '{}' $BASE/api/v1/jobs/$JOB/heatmaps
+# Run an analysis (reuses the project aggregate; needs its own job_id)
+curl -s -H "Content-Type: application/json" \
+  -d "{\"script\":\"heatmaps\",\"project\":\"$PROJECT\",\"spots\":[\"SPOT1\"],\"job_id\":\"job_$(openssl rand -hex 6)\"}" \
+  $BASE/api/v1/scripts
 
-# Download all results as a zip
-curl -s -H "X-API-Key: $KEY" -OJ $BASE/api/v1/jobs/$JOB/download
+# Download all results of a job as a zip
+curl -s -OJ $BASE/api/v1/jobs/$JOB/download
 ```
 
 ---

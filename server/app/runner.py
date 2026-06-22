@@ -2,16 +2,15 @@
 Script runner. Builds the config.apply_overrides() CLI for each pipeline step,
 launches it as a subprocess (cwd = PIPELINE_DIR so `import config` works),
 streams combined stdout/stderr to results/<step>/_run.log, and updates the
-job's task status. Tasks run on a bounded thread pool (async model: the API
-returns a task_id immediately and the caller polls status).
+job's task status.
+
+Execution model: SYNCHRONOUS. ``run_sync`` runs the step to completion on the
+calling thread and the HTTP response itself is the completion signal — this is
+what the STACD/Airflow algorithm API requires (no task polling on this server).
 """
 import shutil
 import subprocess
-import threading
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import Optional
 
 from . import pipeline_meta as meta
 from . import stac
@@ -21,20 +20,41 @@ from .settings import get_settings
 _DEFAULT_START = "19700101"
 _DEFAULT_END = "20991231"
 
-_settings = get_settings()
-_POOL = ThreadPoolExecutor(max_workers=_settings.MAX_CONCURRENT_TASKS)
+# Exit code a pipeline script may use to signal "ran fine, but there was no data
+# to act on" (no detections, empty aggregate). Mapped to NO_DATA instead of a
+# generic failure. Any other non-zero code is treated as PIPELINE_ERROR.
+_NO_DATA_EXIT = 3
+
+
+# --------------------------------------------------------------------------- #
+# Structured errors — each carries a machine code + HTTP status so the API
+# never has to guess severity from free-text messages.
+# --------------------------------------------------------------------------- #
+class RunError(Exception):
+    code = "PIPELINE_ERROR"
+    http_status = 500
+
+
+class BadRequestError(RunError):
+    code = "BAD_REQUEST"
+    http_status = 400
+
+
+class NoDataError(RunError):
+    code = "NO_DATA"
+    http_status = 404
 
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _norm_date(value: Optional[str], default: str) -> str:
+def _norm_date(value: str | None, default: str) -> str:
     if not value:
         return default
     v = value.strip().replace("-", "")
     if len(v) != 8 or not v.isdigit():
-        raise ValueError(f"Bad date '{value}', expected YYYY-MM-DD or YYYYMMDD")
+        raise BadRequestError(f"Bad date '{value}', expected YYYY-MM-DD or YYYYMMDD")
     return v
 
 
@@ -83,14 +103,14 @@ def _tunable_flags(step: str, params: dict) -> list[str]:
 
 
 def build_command(job: Job, step: str, params: dict) -> list[str]:
-    """Return argv for the given step. Raises ValueError on missing prerequisites."""
+    """Return argv for the given step. Raises RunError on missing prerequisites."""
     s = get_settings()
     script = s.PIPELINE_DIR / meta.SCRIPTS[step]
     cmd = [s.PYTHON_BIN, str(script)]
 
     if step == meta.BIRDNET:
-        if not job.has_audio() and not job.get_reference_spots():
-            raise ValueError("No audio uploaded. Upload WAV files (kind=audio) before running birdnet.")
+        if not job.has_audio():
+            raise NoDataError("No audio uploaded. Upload WAV files before running birdnet.")
         if (job.uploaded_aggregate.is_file()
                 and job.uploaded_aggregate.stat().st_size > 0
                 and not job.work_aggregate.is_file()):
@@ -103,13 +123,6 @@ def build_command(job: Job, step: str, params: dict) -> list[str]:
         cmd += ["--datasets", str(job.audio_dir)]
 
         all_files, all_spots = [], []
-        ref_spots = job.get_reference_spots()
-        if ref_spots:
-            for base, spot in ref_spots.items():
-                fp = job.reference_dir / base
-                if fp.is_file():
-                    all_files.append(str(fp))
-                    all_spots.append(spot if spot else "_")
         audio_spots = job.get_audio_spots()
         if audio_spots and job.audio_dir.is_dir():
             for f in sorted(job.audio_dir.iterdir()):
@@ -133,21 +146,14 @@ def build_command(job: Job, step: str, params: dict) -> list[str]:
         return cmd
 
     if step == meta.ACOUSTIC_INDICES:
-        if not job.has_audio() and not job.get_reference_spots():
-            raise ValueError("No audio uploaded. Upload WAV files before running acoustic_indices.")
+        if not job.has_audio():
+            raise NoDataError("No audio uploaded. Upload WAV files before running acoustic_indices.")
         out_dir = job.step_results_dir(step)
         out_dir.mkdir(parents=True, exist_ok=True)
         indices_agg = out_dir / "indices_aggregate.csv"
         indices_proc = out_dir / "indices_processed_files.txt"
         cmd += ["--datasets", str(job.audio_dir)]
         all_files, all_spots = [], []
-        ref_spots = job.get_reference_spots()
-        if ref_spots:
-            for base, spot in ref_spots.items():
-                fp = job.reference_dir / base
-                if fp.is_file():
-                    all_files.append(str(fp))
-                    all_spots.append(spot if spot else "_")
         audio_spots = job.get_audio_spots()
         if audio_spots and job.audio_dir.is_dir():
             for f in sorted(job.audio_dir.iterdir()):
@@ -170,7 +176,7 @@ def build_command(job: Job, step: str, params: dict) -> list[str]:
     # analysis steps
     agg = job.resolve_aggregate()
     if agg is None:
-        raise ValueError(
+        raise NoDataError(
             "No aggregate available. Run birdnet first, or upload an aggregate CSV (kind=aggregate)."
         )
     out_dir = job.step_results_dir(step)
@@ -204,13 +210,22 @@ def _execute(job: Job, task_id: str, step: str, params: dict) -> None:
     step_dir = job.step_results_dir(step)
     step_dir.mkdir(parents=True, exist_ok=True)
     log_path = step_dir / "_run.log"
+
+    # ---- prepare command (validation / prerequisite errors) ----
     try:
         cmd = build_command(job, step, params)
+    except RunError as e:
+        log_path.write_text(f"PREP ERROR [{e.code}]: {e}\n")
+        job.update_task(task_id, status="failed", finished_at=_now(),
+                        error=str(e), error_code=e.code)
+        return
     except Exception as e:
         log_path.write_text(f"PREP ERROR: {e}\n")
-        job.update_task(task_id, status="failed", finished_at=_now(), error=str(e))
+        job.update_task(task_id, status="failed", finished_at=_now(),
+                        error=str(e), error_code="PIPELINE_ERROR")
         return
 
+    # ---- run the pipeline subprocess ----
     try:
         with open(log_path, "w") as log:
             log.write("CMD: " + " ".join(cmd) + "\n\n")
@@ -223,34 +238,44 @@ def _execute(job: Job, task_id: str, step: str, params: dict) -> None:
                 text=True,
             )
         rc = proc.returncode
-        status = "success" if rc == 0 else "failed"
-        err = None if rc == 0 else f"Script exited with code {rc}. See _run.log."
-        results = _result_files(job, step)
-        if rc == 0:
-            try:
-                with open(log_path, "a") as log:
-                    sidecars = stac.write_items(
-                        job.root, job.id, step, results, params, job.get_geo())
-                    if sidecars:
-                        log.write(f"\nSTAC: wrote {len(sidecars)} item(s).\n")
-                results = results + sidecars
-            except Exception as e:
-                pass
-        job.update_task(
-            task_id, status=status, finished_at=_now(), returncode=rc,
-            error=err, results=results,
-        )
     except Exception as e:
-        job.update_task(task_id, status="failed", finished_at=_now(), error=str(e))
+        job.update_task(task_id, status="failed", finished_at=_now(),
+                        error=str(e), error_code="PIPELINE_ERROR")
+        return
 
+    if rc != 0:
+        if rc == _NO_DATA_EXIT:
+            code, msg = "NO_DATA", "No data to process (no detections / empty aggregate)."
+        else:
+            code, msg = "PIPELINE_ERROR", f"Script exited with code {rc}. See _run.log."
+        job.update_task(task_id, status="failed", finished_at=_now(),
+                        returncode=rc, error=msg, error_code=code)
+        return
 
-def submit(job: Job, step: str, params: dict) -> dict:
-    """Create a task record and schedule it. Returns the task record."""
-    if not meta.is_valid_step(step):
-        raise ValueError(f"Unknown step '{step}'")
-    task = job.add_task(step, params)
-    _POOL.submit(_execute, job, task["task_id"], step, params)
-    return task
+    # ---- success: collect results + write STAC sidecars ----
+    results = _result_files(job, step)
+    stac_warning = None
+    try:
+        sidecars = stac.write_items(
+            job.root, job.id, step, results, params, job.get_geo())
+        if sidecars:
+            with open(log_path, "a") as log:
+                log.write(f"\nSTAC: wrote {len(sidecars)} item(s).\n")
+            results = results + sidecars
+    except Exception as e:
+        # Surface STAC failures instead of hiding them — the run still produced
+        # results, but provenance is incomplete, and the user should know.
+        stac_warning = f"STAC sidecar generation failed: {e}"
+        try:
+            with open(log_path, "a") as log:
+                log.write(f"\nSTAC WARNING: {stac_warning}\n")
+        except Exception:
+            pass
+
+    job.update_task(
+        task_id, status="success", finished_at=_now(), returncode=rc,
+        error=None, error_code=None, results=results, stac_warning=stac_warning,
+    )
 
 
 def run_sync(job: Job, step: str, params: dict) -> dict:
@@ -262,28 +287,3 @@ def run_sync(job: Job, step: str, params: dict) -> dict:
     task = job.add_task(step, params)
     _execute(job, task["task_id"], step, params)
     return job.get_task(task["task_id"])
-
-
-def _run_all_worker(job: Job, task_ids: dict, params: dict) -> None:
-    """Sequential birdnet -> analyses in one thread (correct ordering)."""
-    for step in meta.RUN_ORDER:
-        tid = task_ids[step]
-        if step in (meta.BIRDNET, meta.ACOUSTIC_INDICES):
-            if not job.has_audio() and not job.get_reference_spots():
-                job.update_task(tid, status="failed", finished_at=_now(),
-                                error="skipped: no audio uploaded")
-                continue
-        else:
-            if job.resolve_aggregate() is None:
-                job.update_task(tid, status="failed", finished_at=_now(),
-                                error="skipped: no aggregate available")
-                continue
-        _execute(job, tid, step, params)
-
-
-def submit_all(job: Job, params: dict) -> list[dict]:
-    """Create task records for every step and run them in order on one worker."""
-    tasks = {step: job.add_task(step, params) for step in meta.RUN_ORDER}
-    task_ids = {step: t["task_id"] for step, t in tasks.items()}
-    _POOL.submit(_run_all_worker, job, task_ids, params)
-    return list(tasks.values())
