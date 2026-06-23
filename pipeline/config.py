@@ -19,7 +19,6 @@ DATE_START: date = date(2025, 11, 1)
 DATE_END:   date = date(2025, 12, 31)
 INPUT_FILE_LIST: list[str] = []     # explicit WAV paths to always include (birdnet only)
 INPUT_FILE_SPOTS: list[str] = []    # spot name per INPUT_FILE_LIST entry, aligned 1:1 ("" = derive from filename)
-DATASET_SPOTS: list[str] = []       # spot name per INPUT_DIRECTORIES entry, aligned 1:1 ("" = derive from filename)
 
 # =============================================================================
 # PATHS — set once for your environment
@@ -35,10 +34,6 @@ AGGREGATE_FILE:     str = r"path/to/birdnet_aggregate.csv"
 PROCESSED_FILE:     str = r"path/to/processed_files.txt"
 OUTPUT_CSV:         str = r"path/to/birdnet_output.csv"
 
-# Acoustic indices pipeline files
-AGGREGATE_FILE_INDICES: str = r"path/to/indices_aggregate.csv"
-PROCESSED_FILE_INDICES: str = r"path/to/indices_processed_files.txt"
-
 # Denoising reference clips
 STATIC_NOISE_PATH:  str = r"path/to/static_noise.wav"
 RAIN_NOISE_PATH:    str = r"path/to/rain_noise.wav"
@@ -52,7 +47,6 @@ OUTPUT_DIR_03_TEMPORAL:     str = r"path/to/output/03_temporal_stickiness"
 OUTPUT_DIR_04_SPATIAL:      str = r"path/to/output/04_spatial_stickiness"
 OUTPUT_DIR_07_MIGRATORY:    str = r"path/to/output/07_migratory"
 OUTPUT_DIR_08_SOLAR:        str = r"path/to/output/08_solar"
-OUTPUT_DIR_05_INDICES:      str = r"path/to/output/05_acoustic_indices"
 OUTPUT_DIR_09_TIMESERIES:   str = r"path/to/output/09_timeseries"
 
 # =============================================================================
@@ -105,7 +99,6 @@ SPECIES_TO_PLOT:    list[str] | None = None  # 09_timeseries (None = top N)
 #   --ebird-file PATH            -> EBIRD_FILE
 #   --noise-path PATH            -> STATIC_NOISE_PATH
 #   --rain-path PATH             -> RAIN_NOISE_PATH
-#   --dataset-spots A B C         -> DATASET_SPOTS  (aligned 1:1 with --datasets)
 #   --spots A,B,C                -> SPOT_NAMES
 #   --start-date YYYYMMDD        -> DATE_START
 #   --end-date YYYYMMDD          -> DATE_END
@@ -130,11 +123,8 @@ def apply_overrides(argv=None) -> None:
     p.add_argument("--datasets", nargs="*", default=None)
     p.add_argument("--input-file-list", nargs="*", default=None)
     p.add_argument("--input-file-spots", nargs="*", default=None)
-    p.add_argument("--dataset-spots", nargs="*", default=None)
     p.add_argument("--aggregate-file", default=None)
-    p.add_argument("--aggregate-file-indices", default=None)
     p.add_argument("--processed-file", default=None)
-    p.add_argument("--processed-file-indices", default=None)
     p.add_argument("--output-csv", default=None)
     p.add_argument("--output-dir", default=None)
     p.add_argument("--ebird-file", default=None)
@@ -162,11 +152,8 @@ def apply_overrides(argv=None) -> None:
     if args.datasets:         g["INPUT_DIRECTORIES"] = list(args.datasets)
     if args.input_file_list:  g["INPUT_FILE_LIST"] = list(args.input_file_list)
     if args.input_file_spots: g["INPUT_FILE_SPOTS"] = ["" if s == "_" else s for s in args.input_file_spots]
-    if args.dataset_spots:    g["DATASET_SPOTS"] = ["" if s == "_" else s for s in args.dataset_spots]
     if args.aggregate_file:   g["AGGREGATE_FILE"] = args.aggregate_file
-    if args.aggregate_file_indices: g["AGGREGATE_FILE_INDICES"] = args.aggregate_file_indices
     if args.processed_file:   g["PROCESSED_FILE"] = args.processed_file
-    if args.processed_file_indices: g["PROCESSED_FILE_INDICES"] = args.processed_file_indices
     if args.ebird_file:       g["EBIRD_FILE"] = args.ebird_file
     if args.noise_path:       g["STATIC_NOISE_PATH"] = args.noise_path
     if args.rain_path:        g["RAIN_NOISE_PATH"] = args.rain_path

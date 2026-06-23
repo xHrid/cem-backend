@@ -31,8 +31,7 @@ def run_solar_correlation(df, output_dir):
 
     daily_counts = df.groupby(["common_name", "Date_Only"]).size().reset_index(name="daily_count")
     daily_counts = daily_counts[daily_counts["daily_count"] > 10]
-    vc = daily_counts["common_name"].value_counts()
-    valid_birds = vc[vc >= cfg.MIN_SOLAR_DAYS].index
+    valid_birds = daily_counts["common_name"].value_counts()[lambda x: x > cfg.MIN_SOLAR_DAYS].index
     daily_counts = daily_counts[daily_counts["common_name"].isin(valid_birds)]
 
     filtered = df.merge(
@@ -41,12 +40,6 @@ def run_solar_correlation(df, output_dir):
     )
     print(f"Species with sufficient data: {len(valid_birds)}")
 
-    if len(valid_birds) == 0 or filtered.empty:
-        print("WARNING: No species passed the solar filter (need >10 detections/day on multiple days). Writing empty results.")
-        pd.DataFrame(columns=["Bird", "Pearson_Sunrise", "P-Val_Sunrise", "Pearson_Sunset", "P-Val_Sunset", "Sample_Size"]).to_csv(
-            os.path.join(output_dir, "solar_correlation_results.csv"), index=False)
-        return
-
     peak = filtered.groupby(
         ["common_name", "Date_Only"]
     )["hour"].agg(lambda x: x.value_counts().idxmax()).reset_index()
@@ -54,11 +47,6 @@ def run_solar_correlation(df, output_dir):
     peak["date"] = pd.to_datetime(peak["Date_Only"])
 
     min_d, max_d = peak["Date_Only"].min(), peak["Date_Only"].max()
-    if pd.isna(min_d) or pd.isna(max_d):
-        print("WARNING: Could not determine date range for solar calculation. Writing empty results.")
-        pd.DataFrame(columns=["Bird", "Pearson_Sunrise", "P-Val_Sunrise", "Pearson_Sunset", "P-Val_Sunset", "Sample_Size"]).to_csv(
-            os.path.join(output_dir, "solar_correlation_results.csv"), index=False)
-        return
     date_range = pd.date_range(start=min_d, end=max_d)
 
     sun_data = []

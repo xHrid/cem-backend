@@ -3,7 +3,7 @@
 A Docker container that runs BirdNET bird detection and six ecological analysis scripts over a simple REST API.
 
 **Frontend:** https://github.com/xHrid/cem-toolkit  
-**Docker image:** `hridayansh/cem-bioacoustics` (DockerHub)
+**Docker image:** `hridayansh/cem-backend` (DockerHub)
 
 ---
 
@@ -25,43 +25,24 @@ Run `birdnet` first — it produces the CSV that all other steps consume. If you
 
 ---
 
-## Quick start (pull from DockerHub)
+## Quick start (build from source)
 
-You only need Docker. No source checkout required.
-
-```bash
-# 1. Create a folder and grab the two config files
-mkdir cem-bioacoustics && cd cem-bioacoustics
-curl -O https://raw.githubusercontent.com/xHrid/cem-backend/main/docker-compose.hub.yml
-curl -O https://raw.githubusercontent.com/xHrid/cem-backend/main/.env.example
-
-# 2. Create your env file
-cp .env.example .env
-# Open .env and adjust ALLOWED_ORIGINS / paths as needed
-
-# 3. Start the server
-docker compose -f docker-compose.hub.yml up -d
-
-# 4. Verify it's running
-curl localhost:8000/health
-```
-
-API docs (interactive): http://localhost:8000/docs
-
----
-
-## Build from source
-
-Use this when you want to edit pipeline scripts or server code.
+You need Docker and git.
 
 ```bash
 git clone https://github.com/xHrid/cem-backend.git
 cd cem-backend
 
-cp .env.example .env   # adjust as needed
+cp .env.example .env
+# Open .env and set ALLOWED_ORIGINS to your frontend URL (see Configuration)
 
-docker compose up --build
+docker compose up --build -d
+
+# Verify it's running
+curl localhost:8000/health
 ```
+
+API docs (interactive): http://localhost:8000/docs
 
 The compose file bind-mounts `./pipeline` and `./server/app` into the container. After editing a script, `docker compose restart` is enough — no rebuild. Only rebuild (`--build`) when `requirements.txt` or `server/requirements-server.txt` changes.
 
@@ -117,16 +98,16 @@ Do this when dependencies change (`requirements.txt` or `server/requirements-ser
 
 ```bash
 # Build
-docker build -t hridayansh/cem-bioacoustics:1.2.0 .
-docker tag hridayansh/cem-bioacoustics:1.2.0 hridayansh/cem-bioacoustics:latest
+docker build -t hridayansh/cem-backend:1.2.0 .
+docker tag hridayansh/cem-backend:1.2.0 hridayansh/cem-backend:latest
 
 # Push
 docker login
-docker push hridayansh/cem-bioacoustics:1.2.0
-docker push hridayansh/cem-bioacoustics:latest
+docker push hridayansh/cem-backend:1.2.0
+docker push hridayansh/cem-backend:latest
 ```
 
-Then update the version tag in `docker-compose.hub.yml` and commit.
+Then update the `image:` tag in `docker-compose.yml` and commit.
 
 ---
 
@@ -140,8 +121,7 @@ cem-backend/
 │   └── requirements-server.txt
 ├── requirements.txt   ← pipeline dependencies
 ├── Dockerfile
-├── docker-compose.yml         ← dev (bind-mounts code, build from source)
-└── docker-compose.hub.yml     ← prod (pulls image from DockerHub)
+└── docker-compose.yml         ← builds from source, bind-mounts code
 ```
 
 Pipeline scripts in `pipeline/` are the single source of truth. The local watcher pulls them from this repo via GitHub raw URLs.
