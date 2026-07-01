@@ -9,6 +9,7 @@ services:
       - "8000:8000"
     environment:
       MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-2048}
+      LOG_DIR: ${LOG_DIR:-/logs}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-*}
       BIRDNET_MAX_WORKERS: ${BIRDNET_MAX_WORKERS:-2}
       API_VERSION: ${API_VERSION:-1.1.0}
@@ -26,9 +27,15 @@ services:
       AIRFLOW_PASSWORD: ${AIRFLOW_PASSWORD:-admin}
       AIRFLOW_DAG_ID: ${AIRFLOW_DAG_ID:-cem_pipeline}
       AIRFLOW_TIMEOUT: ${AIRFLOW_TIMEOUT:-10}
+      # GEE stratification (optional). Personal auth: mount credentials below.
+      GEE_PROJECT: ${GEE_PROJECT:-ee-geeapi}
+      GEE_SERVICE_ACCOUNT: ${GEE_SERVICE_ACCOUNT:-}
+      GEE_SERVICE_ACCOUNT_KEY: ${GEE_SERVICE_ACCOUNT_KEY:-}
     volumes:
       - ${HOST_DATA_DIR:-./data}:/data
+      - ${HOST_LOG_DIR:-./logs}:/logs
       - ./pipeline:/app/pipeline
       - ./server/app:/app/app
+      - ${EARTHENGINE_CREDENTIALS:-~/.config/earthengine}:/root/.config/earthengine:ro
     restart: unless-stopped
  

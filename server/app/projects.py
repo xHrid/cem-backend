@@ -107,6 +107,31 @@ class Project:
     def audio_count(self, spot: Optional[str] = None) -> int:
         return len(self.list_audio_files(spot))
 
+    def in_range_audio(
+        self,
+        spots: list[str],
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+    ) -> set[str]:
+        """Basenames of audio in the given spots that fall inside the date range.
+        Files without a parseable date are always included (same as populate_job)."""
+        names: set[str] = set()
+        for spot in spots:
+            d = self.spot_audio_dir(spot)
+            if not d.is_dir():
+                continue
+            for p in d.iterdir():
+                if not p.is_file():
+                    continue
+                fd = self._parse_date_from_filename(p.name)
+                if fd:
+                    if start_date and fd < start_date:
+                        continue
+                    if end_date and fd > end_date:
+                        continue
+                names.add(p.name)
+        return names
+
     # ---- aggregate ----
     def has_aggregate(self) -> bool:
         return self.aggregate_path.is_file() and self.aggregate_path.stat().st_size > 0
@@ -126,6 +151,17 @@ class Project:
             return None
         ts = self.processed_path.stat().st_mtime
         return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+
+    def processed_set(self) -> set[str]:
+        """Basenames of audio BirdNET has already processed."""
+        if not self.processed_path.is_file():
+            return set()
+        out: set[str] = set()
+        for ln in self.processed_path.read_text().splitlines():
+            ln = ln.strip()
+            if ln:
+                out.add(Path(ln).name)
+        return out
 
     # ---- status ----
     def status(self) -> dict:

@@ -13,9 +13,12 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import quote
 
-from fastapi import APIRouter, Body, File, Form, HTTPException, Query, UploadFile
+from fastapi import (
+    APIRouter, Body, Depends, File, Form, Header, HTTPException, Query, UploadFile,
+)
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 
+from . import activity_log
 from . import airflow_client
 from . import jobs as jobstore
 from . import pipeline_meta as meta
@@ -30,6 +33,13 @@ router = APIRouter(prefix="/api/v1", tags=["cem"])
 # =========================================================================== #
 #  Helpers
 # =========================================================================== #
+
+def _user(
+    x_user_email: Optional[str] = Header(None),
+    x_user_id: Optional[str] = Header(None),
+) -> dict:
+    return {"email": x_user_email, "id": x_user_id}
+
 
 def _require_job(job_id: str) -> jobstore.Job:
     job = jobstore.get_job(job_id)
@@ -76,11 +86,31 @@ def project_status(project: str = Query(..., description="Project folder name"))
     return proj.status()
 
 
+@router.post("/projects/check-files")
+def check_files(body: dict = Body(...)):
+    project = body.get("project")
+    if not project:
+        raise HTTPException(400, "project is required.")
+    files_by_spot = body.get("files", {})
+    if not files_by_spot:
+        return {"to_upload": {}}
+
+    proj = projectstore.get_or_create_project(project)
+    to_upload = {}
+    for spot, filenames in files_by_spot.items():
+        existing = set(proj.list_audio_files(spot))
+        needed = [f for f in filenames if f not in existing]
+        if needed:
+            to_upload[spot] = needed
+    return {"to_upload": to_upload}
+
+
 @router.post("/projects/upload/audio")
 def project_upload_audio(
     project: str = Form(..., description="Project folder name"),
     spot: str = Form(..., description="Spot name for these files"),
     files: list[UploadFile] = File(...),
+    user: dict = Depends(_user),
 ):
     if not files:
         raise HTTPException(400, "No files provided.")
@@ -103,6 +133,11 @@ def project_upload_audio(
         existing.add(fname)
 
     proj._touch()
+    activity_log.append(
+        user, "upload_audio",
+        project=project, spot=spot,
+        uploaded=len(saved), skipped=len(skipped),
+    )
     return {
         "status": "ok",
         "project": project,
@@ -197,6 +232,53 @@ def _resolve_script_name(name: str) -> str:
     return name  # fall through — will fail validation below
 
 
+def _birdnet_covers(proj, spots: list, start_date, end_date) -> bool:
+    """True if BirdNET has already processed every in-range audio file."""
+    in_range = proj.in_range_audio(spots, start_date, end_date)
+    if not in_range:
+        return True  # nothing to process; the analysis will report NO_DATA itself
+    if not proj.has_aggregate():
+        return False
+    return in_range <= proj.processed_set()
+
+
+def _ensure_dependencies(step: str, body: dict):
+    """Run upstream producers this analysis needs, before the analysis itself.
+    Only raw audio is ever uploaded by the client; upstream results are computed
+    here. Returns a JSONResponse if a dependency run failed, else None."""
+    if not meta.is_analysis(step):
+        return None
+
+    project = body.get("project")
+    spots = body.get("spots")
+    proj = projectstore.get_project(project) if project else None
+    if proj is None:
+        return None  # _run_script handles the missing-project error
+
+    start_date = body.get("start_date")
+    end_date = body.get("end_date")
+
+    for dep in meta.load_manifest().get(step, {}).get("depends_on", []):
+        if dep != meta.BIRDNET:
+            continue  # birdnet is the only project-level producer today
+        if _birdnet_covers(proj, spots, start_date, end_date):
+            continue
+        dep_body = {
+            "project": project,
+            "spots": spots,
+            "start_date": start_date,
+            "end_date": end_date,
+            "job_id": jobstore.new_id("job_"),
+        }
+        for k in ("snr_db", "min_confidence"):
+            if body.get(k) is not None:
+                dep_body[k] = body[k]
+        result = _run_script(meta.BIRDNET, dep_body)
+        if isinstance(result, JSONResponse):
+            return result
+    return None
+
+
 def _run_script(script_name: str, body: dict):
     script_name = _resolve_script_name(script_name)
     if not meta.is_valid_step(script_name):
@@ -217,6 +299,10 @@ def _run_script(script_name: str, body: dict):
     if proj is None:
         raise HTTPException(404, f"Project '{project}' not found.")
 
+    dep_resp = _ensure_dependencies(script_name, body)
+    if dep_resp is not None:
+        return dep_resp
+
     client_job_id = body.get("job_id")
     if not client_job_id:
         raise HTTPException(400, "job_id is required (minted by the client).")
@@ -235,6 +321,9 @@ def _run_script(script_name: str, body: dict):
 
     task = runner.run_sync(job, script_name, run_params)
     task_id = task["task_id"]
+
+    activity_log.copy_run_log(
+        job.step_results_dir(script_name) / "_run.log", job.id, script_name)
 
     if task["status"] != "success":
         etype = task.get("error_code") or "PIPELINE_ERROR"
@@ -301,7 +390,7 @@ def run_script(body: dict = Body(...)):
 
 
 @router.post("/analyze", summary="Dispatch a script: via Airflow if configured, else run locally")
-def analyze(body: dict = Body(...)):
+def analyze(body: dict = Body(...), user: dict = Depends(_user)):
     """Front-end entry point (DISPATCHER).
 
     - Airflow not configured -> run the pipeline locally and return the result
@@ -317,6 +406,13 @@ def analyze(body: dict = Body(...)):
     job_id = body.get("job_id")
     if not job_id:
         raise HTTPException(400, "job_id is required (minted by the client).")
+
+    activity_log.append(
+        user, "run_analysis",
+        project=body.get("project"), step=script_name, job_id=job_id,
+        spots=body.get("spots"),
+        start_date=body.get("start_date"), end_date=body.get("end_date"),
+    )
 
     # Direct mode: identical behaviour to /scripts (synchronous result).
     if not airflow_client.is_configured():
@@ -546,3 +642,57 @@ def download_file(job_id: str, path: str = Query(..., description="Result path r
     if not target.is_file():
         raise HTTPException(404, f"File '{path}' not found.")
     return FileResponse(target, filename=target.name)
+
+
+# =========================================================================== #
+#  GROUP 4 -- Stratification (GEE)
+# =========================================================================== #
+
+@router.post("/stratify")
+def stratify(body: dict = Body(...), user: dict = Depends(_user)):
+    kml_content = body.get("kml_content")
+    if not kml_content:
+        raise HTTPException(400, "kml_content is required (base64 or raw string).")
+
+    import base64
+    try:
+        kml_bytes = base64.b64decode(kml_content)
+    except Exception:
+        kml_bytes = kml_content.encode("utf-8") if isinstance(kml_content, str) else kml_content
+
+    max_clusters = int(body.get("max_clusters", 5))
+    year = int(body.get("year", 2024))
+    scale = int(body.get("scale", 10))
+    num_pixels = int(body.get("num_pixels", 1000))
+
+    try:
+        from .gee_processor import generate_stratification
+        results = generate_stratification(
+            kml_bytes,
+            max_clusters=max_clusters,
+            year=year,
+            scale=scale,
+            num_pixels=num_pixels,
+        )
+    except Exception as e:
+        raise HTTPException(500, f"Stratification failed: {e}")
+
+    activity_log.append(
+        user, "stratify",
+        project=body.get("project"), max_clusters=max_clusters, year=year,
+    )
+    return {"status": "ok", "results": results}
+
+
+@router.get("/stratify/overlay/{overlay_id}")
+def get_overlay(overlay_id: str):
+    safe_id = os.path.basename(overlay_id).replace("..", "")
+    fpath = get_settings().DATA_DIR / "stratification_overlays" / f"{safe_id}.png"
+    if not fpath.is_file():
+        raise HTTPException(404, "Overlay not found.")
+    return FileResponse(
+        fpath,
+        media_type="image/png",
+        filename=f"{safe_id}.png",
+        headers={"Access-Control-Allow-Origin": "*"},
+    )

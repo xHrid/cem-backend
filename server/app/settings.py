@@ -20,6 +20,7 @@ class Settings:
     def __init__(self) -> None:
         self.API_VERSION: str = os.environ.get("API_VERSION", "1.1.0")
         self.DATA_DIR: Path = Path(os.environ.get("DATA_DIR", "/data")).resolve()
+        self.LOG_DIR: Path = Path(os.environ.get("LOG_DIR", "/logs")).resolve()
         self.PIPELINE_DIR: Path = Path(os.environ.get("PIPELINE_DIR", "/app/pipeline")).resolve()
         self.PYTHON_BIN: str = os.environ.get("PYTHON_BIN", "python")
         self.MAX_UPLOAD_MB: int = int(os.environ.get("MAX_UPLOAD_MB", "2048"))
@@ -44,6 +45,14 @@ class Settings:
         self.AIRFLOW_PASSWORD: str = os.environ.get("AIRFLOW_PASSWORD", "")
         self.AIRFLOW_DAG_ID: str = os.environ.get("AIRFLOW_DAG_ID", "cem_pipeline")
         self.AIRFLOW_TIMEOUT: float = float(os.environ.get("AIRFLOW_TIMEOUT", "10"))
+        # ---- GEE (optional) ----
+        self.GEE_PROJECT: str = os.environ.get("GEE_PROJECT", "ee-geeapi")
+        self.GEE_SERVICE_ACCOUNT: str = os.environ.get("GEE_SERVICE_ACCOUNT", "")
+        self.GEE_SERVICE_ACCOUNT_KEY: str = os.environ.get("GEE_SERVICE_ACCOUNT_KEY", "")
+        self.GEE_DEFAULT_YEAR: int = int(os.environ.get("GEE_DEFAULT_YEAR", "2024"))
+        self.GEE_DEFAULT_SCALE: int = int(os.environ.get("GEE_DEFAULT_SCALE", "10"))
+        self.GEE_DEFAULT_NUM_PIXELS: int = int(os.environ.get("GEE_DEFAULT_NUM_PIXELS", "1000"))
+        self.GEE_MAX_CLUSTERS: int = int(os.environ.get("GEE_MAX_CLUSTERS", "8"))
 
     @property
     def default_ebird(self) -> Path:

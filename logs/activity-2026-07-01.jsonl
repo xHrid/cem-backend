@@ -1,0 +1,2 @@
+{"ts": "2026-07-01T19:48:55.973417+00:00", "service": "cem-backend", "user_email": null, "user_id": null, "action": "run_analysis", "project": "local_test_SIT_ca1f90", "step": "birdnet", "job_id": "job_1e6c168f317c", "spots": ["SIT-1", "SIT-2"], "start_date": "20250101", "end_date": "20260702"}
+{"ts": "2026-07-01T20:10:17.350133+00:00", "service": "cem-backend", "user_email": null, "user_id": null, "action": "stratify", "max_clusters": 5, "year": 2024}
