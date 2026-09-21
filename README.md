@@ -1,198 +1,242 @@
-# CEM Setup Guide - From Clone to Running App
+# cem-backend
 
-This is a start-to-finish guide for standing up the CEM Toolkit: frontend and backend, both as Docker containers, plus the optional local watcher for machine-side analysis.
-Follow it top to bottom on a clean machine and you end up with a working app.
+The **compute** side of CEM: a FastAPI server that runs BirdNET and the
+ecological analysis pipeline over uploaded audio, and publishes finished
+projects for the public catalogue.
 
-## What you end up with
+This repo owns the whole compute stack. One command starts all three services.
 
-Two independent Docker containers, each from its own repo:
-
-- **`cem-frontend`** - the static SPA (vanilla JS), served by nginx on port 8080.
-- **`cem-backend`** - the FastAPI + BirdNET analysis API, on port 8000.
-
-They talk to each other over plain HTTP: the frontend calls the backend's REST API, and both talk to Google (OAuth login + Drive storage) directly from the browser.
-Nothing else is required to get a working local setup; Earth Engine stratification and the local watcher are both optional add-ons, covered near the end.
-
-## Prerequisites
-
-- Docker Desktop (or Docker Engine + Compose) - both containers build and run through it.
-- Git.
-- A Google account, to create the OAuth client and API key in the next step.
-- Python 3.10+ - only needed if you also want to run the local watcher (Step 6).
-
-## Step 1: Clone both repos
-
-```bash
-git clone https://github.com/xHrid/cem-frontend.git
-git clone https://github.com/xHrid/cem-backend.git
+```text
+Browser
+  └─ frontend (nginx :8080)          the compute page, from ../cem-frontend
+       └─ REST ──▶ api (FastAPI :8002)
+                     ├─ pipeline/    BirdNET + analyses
+                     └─ DATA_DIR ────┬─▶ filebrowser (:8097)  download links
+                                     └─▶ read-only by cem-master-backend's indexer
 ```
 
-They are independent repos with independent git history; nothing assumes a shared parent folder, though this guide's paths assume they sit side by side.
+## Quick start
 
-## Step 2: Create a Google OAuth Client ID and Picker API Key
+Clone the two compute repos **side by side** — compose builds the frontend from
+`../cem-frontend`:
 
-CEM uses Google for two things: signing users in, and storing all project data in the user's own Google Drive (no CEM-hosted database).
-Both need credentials from a Google Cloud project.
-
-1. Go to the [Google Cloud Console](https://console.cloud.google.com/) and create a project (or pick an existing one).
-2. **Enable APIs.** Under "APIs & Services" > "Library", enable:
-   - Google Picker API
-   - Google Drive API
-3. **OAuth consent screen.** Under "APIs & Services" > "OAuth consent screen", set it up (External is fine for testing) and add these scopes:
-   ```
-   openid email profile https://www.googleapis.com/auth/drive.file
-   ```
-   `openid email profile` identifies the user (name, email, a stable account ID).
-   `drive.file` is what lets CEM read/write only the files and folders it creates in the user's Drive, nothing else in their account.
-4. **Create the OAuth Client ID.** Under "APIs & Services" > "Credentials" > "Create Credentials" > "OAuth client ID", type **Web application**.
-   Add every origin the app will actually be served from under "Authorized JavaScript origins", for example:
-   ```
-   http://localhost:8080
-   https://your-production-domain.example
-   ```
-   Save it. You get a client ID that looks like `1234567890-abc123xyz.apps.googleusercontent.com`.
-5. **Create the Picker API key.** Still under "Credentials", "Create Credentials" > "API key".
-   Restrict it to the Google Picker API (and Drive API if prompted), and restrict it to the same HTTP referrers as your OAuth origins above, so the key can't be reused elsewhere.
-
-Keep both values, `GOOGLE_CLIENT_ID` and `PICKER_API_KEY`, at hand for Step 4.
-
-## Step 3: Backend
+```text
+your-workspace/
+├── cem-backend/      <- you are here
+└── cem-frontend/
+```
 
 ```bash
-cd cem-backend
 cp .env.example .env
+docker compose up -d --build
+curl localhost:8002/health          # {"status":"ok", ...}
 ```
 
-Open `.env` and set `ALLOWED_ORIGINS` to the frontend origin you'll actually use, for example:
+| | |
+| --- | --- |
+| Compute page | <http://localhost:8080> |
+| API docs | <http://localhost:8002/docs> |
+| FileBrowser | <http://localhost:8097> |
+
+`./pipeline` and `./server/app` are bind-mounted, so editing a script needs
+`docker compose restart api`, not a rebuild. Rebuild only when
+`requirements.txt` changes.
+
+> The frontend used to live in `cem-frontend/docker-compose.yml`. That file was
+> removed: two compose files meant two ways to start one system, and they
+> drifted. One repo owns each service now.
+
+## Configuration
+
+`.env` is read automatically by Compose.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `CEM_DATA_DIR_HOST` | `./data` | Where projects, audio and results live |
+| `ALLOWED_ORIGINS` | `*` | CORS. Narrow this in anything public |
+| `COMPUTE_BACKEND_PORT` | `8002` | Host port for the API |
+| `COMPUTE_FRONTEND_PORT` | `8080` | Host port for the page |
+| `SERVER_BASE_URL` | `http://localhost:8002` | API address **as the browser sees it** |
+| `GOOGLE_CLIENT_ID` | *(blank)* | Blank disables Drive features only |
+| `BIRDNET_MAX_WORKERS` | `2` | Each worker loads its own TensorFlow model |
+| `RETENTION_HOURS` | `168` | Job-folder sweep. `0` disables. Public projects are exempt |
+| `FILEBROWSER_BASE_URL` | *(blank)* | Blank = no share links. See below |
+
+`js/core/Config.js` is generated **inside the frontend container at startup**
+from `SERVER_BASE_URL` and friends — you no longer run `generate_config.sh` by
+hand. A blank `GOOGLE_CLIENT_ID` is fine: `App.js` logs *"Drive features
+disabled"* and carries on, and the API has no authentication of its own.
+
+## Two rules that fail silently
+
+These cost real debugging time. Neither produces an error.
+
+**1. Filenames must follow the Song Meter convention.**
 
 ```
-ALLOWED_ORIGINS=http://localhost:8080
+SPOT_YYYYMMDD_HHMMSS.wav       e.g. 04213SPOT1_20260131_082409.wav
 ```
 
-This is the one setting most setups get wrong: the backend rejects browser requests from any origin not in this list, silently, as a CORS failure in the browser console rather than a clear error.
-It must be the frontend's exact scheme+host+port, comma-separated if there's more than one (no trailing slash).
+`pipeline/file_metadata.py` returns `None` for anything else, and
+`birdnet_predictions.py`'s date filter then drops the file **without a
+message**. A folder of `REC001.wav` gives you an empty run that looks exactly
+like BirdNET finding nothing.
 
-The other `.env` values (`HOST_DATA_DIR`, `BIRDNET_MAX_WORKERS`, `MAX_UPLOAD_MB`, retention, STAC, Airflow) all have working defaults; see the comments in `.env.example` if you need to change them.
+**2. Dates on the API are `YYYYMMDD`, not ISO.**
 
-Build and start:
+`projects.py` filters uploads with a plain string comparison against
+`_parse_date_from_filename`, which yields `"20260131"`:
+
+```python
+if end_date and fd > end_date: continue
+```
+
+Send `"2026-01-31"` and every file is skipped — `'0'` is `0x30`, `'-'` is
+`0x2D`, so the compact form sorts *after* the ISO one. You get a 409 saying no
+audio matches the range, for audio sitting right there on disk. The frontend
+avoids this with `startDate.replace(/-/g, '')`; nothing server-side validates
+the format, so any other client repeats the mistake.
+
+## Typical flow
+
+```text
+POST /api/v1/projects/upload/audio     project, spot, files
+POST /api/v1/analyze                   script=birdnet, job_id, spots, spots_geo,
+                                       start_date/end_date as YYYYMMDD
+POST /api/v1/projects/publish          project        ← "Make public"
+```
+
+`/analyze` is **synchronous** when Airflow is not configured: the HTTP call
+blocks for the whole run and the response carries the result. 24 minutes of
+audio takes about a minute on CPU.
+
+`spots_geo` (`[{"name", "lat", "lon"}]`) is the **only** place coordinates ever
+reach disk, as `<job>/input/geo.json`. A spot analysed without it can never be
+placed on the master map.
+
+> Song Meter recorders already write their GPS into each WAV's GUANO chunk.
+> `cem-master-backend/scripts/dev_compute_e2e.py` reads it, so nobody types
+> coordinates. Doing the same in `upload/audio` would remove a whole class of
+> "spot is in the wrong place" bugs — worth doing.
+
+`publish` refuses with **409** unless there is a completed server-side BirdNET
+job *and* `dataset/aggregate.csv`. That guard is deliberate: a project with no
+detections has nothing to publish. Publishing sets `visibility=public` and
+`retention_hours=None`, exempting it from the sweeper — the master catalogue
+must not point at files that expire.
+
+Re-running a step with identical parameters returns the previous successful task
+rather than re-running it, and `processed_files.txt` means already-analysed
+audio is skipped. Use a new project name if you want to watch BirdNET work.
+
+## FileBrowser (download links)
+
+`runner.py` creates a public share for each step's output directory and records
+the hash in `job.json`. The master indexer reads those hashes and turns them into
+download links on the public page. It never creates or revokes one.
+
+Off by default. To enable:
+
+```dotenv
+FILEBROWSER_BASE_URL=http://filebrowser:80
+FILEBROWSER_PASSWORD=<the real password>
+```
+
+> **The password is not `admin`.** Recent FileBrowser images generate a random
+> one on first start and print it once:
+> ```bash
+> docker compose logs filebrowser | grep -i password
+> ```
+> Set a known one instead with
+> `docker compose exec filebrowser filebrowser users update admin --password X`.
+
+Three things to know before enabling this on real data:
+
+1. Shares are created at **analysis** time, for private projects too. Only
+   project visibility keeps them out of the catalogue; the share itself exists,
+   and anyone holding the hash can read it.
+2. `mark_private()` sets `retention_hours=168`, so a link stays live for up to
+   7 days after unpublishing while the catalogue rows vanish in ~30s. Unpublish
+   should revoke shares.
+3. FileBrowser's UI on `:8097` is a separate surface and must not be publicly
+   reachable as shipped.
+
+`share_dir` is `work/` for birdnet and `results/<step>/` for everything else —
+birdnet writes its real outputs to `work/` and leaves only `_run.log` in
+`results/birdnet/`.
+
+## Earth Engine (optional, stratification only)
+
+Separate credentials from anything above. On the **host**:
 
 ```bash
-docker compose up --build -d
-curl localhost:8000/health
+pip install earthengine-api && earthengine authenticate
 ```
 
-`{"status":"ok"}` means it's up.
-Interactive API docs are at `http://localhost:8000/docs`.
+Then in `.env` — an absolute path, because `~` does not expand in a volume mount:
 
-The compose file bind-mounts `./pipeline` and `./server/app` into the container, so editing a script only needs `docker compose restart`, no rebuild.
-Rebuild (`--build`) only when `requirements.txt` or `server/requirements-server.txt` changes.
-
-## Step 4: Frontend
-
-```bash
-cd ../cem-frontend
-GOOGLE_CLIENT_ID="your-client-id.apps.googleusercontent.com" \
-PICKER_API_KEY="your-picker-api-key" \
-SERVER_BASE_URL="http://localhost:8000" \
-bash generate_config.sh
-```
-
-This writes `js/core/Config.js`, which is git-ignored and never baked into the Docker image, so this step is required once per machine and again any time a value changes.
-
-- `GOOGLE_CLIENT_ID` / `PICKER_API_KEY` - from Step 2.
-- `SERVER_BASE_URL` - the backend's URL from the browser's point of view.
-  Leave unset entirely to run frontend-only with local analysis (watcher) instead of the server.
-- `AIRFLOW_TRIGGER_URL` - leave unset unless you're routing through Airflow (Step 7 territory, not needed for a first setup).
-
-Now build and start the frontend container:
-
-```bash
-docker compose up --build -d
-```
-
-Open `http://localhost:8080`.
-The compose file bind-mounts the source (including the freshly generated `Config.js`) over the image's baked-in copy, so from here on, editing any frontend file and running `docker compose restart` is enough, no rebuild.
-
-At this point sign-in and Drive-backed storage should work, and any analysis you run from the UI dispatches to the backend from Step 3.
-
-## Step 5: Earth Engine (optional, only for stratification)
-
-Stratification (splitting a study area into strata for recorder placement) calls Google Earth Engine, which needs its own credentials, separate from the OAuth client above.
-
-On the **host machine running Docker**:
-
-```bash
-pip install earthengine-api
-earthengine authenticate
-```
-
-This opens a browser, you sign in, and it writes credentials to `~/.config/earthengine/credentials`.
-Your Google account's GEE access must be tied to a Cloud project with the Earth Engine API enabled (the default `GEE_PROJECT` is `ee-geeapi`; set your own if different).
-
-In `cem-backend/.env`, add:
-
-```
+```dotenv
 GEE_PROJECT=ee-geeapi
 EARTHENGINE_CREDENTIALS=/absolute/path/to/.config/earthengine
 ```
 
-Use an absolute path; `~` does not reliably expand inside a compose volume mount.
-Leave `GEE_SERVICE_ACCOUNT*` blank (service-account auth is a separate path, only needed for unattended/server accounts).
-
 ```bash
 docker compose up -d
-docker compose exec api ls -l /root/.config/earthengine   # confirm the credentials landed inside the container
+docker compose exec api ls -l /root/.config/earthengine
 ```
 
-## Step 6: The local watcher (optional, for local-machine analysis)
+Leave `GEE_SERVICE_ACCOUNT*` blank; that is a separate path for unattended
+accounts.
 
-The backend (Steps 3-5) is one of two ways to run analysis; the other is the **watcher**, a small Python daemon that runs on a user's own machine and uses the local file system as the queue instead of the network.
-It's useful for a researcher who wants to run BirdNET locally without uploading audio anywhere.
+## The local watcher (optional)
 
-From a folder the app has been given local storage access to (via "Select Storage" in the UI, which also copies `watcher.py` into that folder):
+The other way to run analysis: a Python daemon on the researcher's own machine,
+using the local filesystem as the queue instead of the network. Useful for
+running BirdNET locally without uploading audio anywhere.
+
+From a folder the app has local storage access to (the UI copies `watcher.py`
+there):
 
 ```bash
 python watcher.py
 ```
 
-On first run it creates its own virtual environment under `system/.venv` and installs pipeline dependencies (numpy, pandas, librosa, tensorflow-cpu, birdnetlib, ...), which takes a few minutes and needs outbound internet access to PyPI and to `raw.githubusercontent.com/xHrid/cem-backend` (it pulls the pipeline scripts from there, tracking the `master` branch).
-After that it polls for job files the UI writes and runs them.
+First run builds a venv under `system/.venv` and installs numpy, pandas,
+librosa, tensorflow-cpu and birdnetlib — several minutes, and it needs outbound
+access to PyPI and `raw.githubusercontent.com/xHrid/cem-backend`, from which it
+pulls the pipeline scripts (tracking `master`).
 
-The UI's watcher indicator reads a heartbeat file the daemon writes; **online** means it saw a heartbeat recently, **stale/offline** means it hasn't (either the watcher isn't running, or it's busy on something slower than the poll interval, like a first-time dependency install).
+The UI's indicator reads a heartbeat file. *Stale/offline* means either it is
+not running or it is busy on something slower than the poll interval — a
+first-time install looks exactly like this.
 
-**Troubleshooting:**
-- *"Another watcher instance is already running (PID N)"* on a fresh start, with no watcher actually running: a previous run crashed without releasing `system/watcher.lock`.
-  Delete that file and restart.
-  This is more likely on Windows, where a crashed watcher's PID can later be reused by an unrelated process, fooling the staleness check.
-- *`ImportError: DLL load failed ... An Application Control policy has blocked this file`* (seen on locked-down/managed Windows machines, e.g. institutional IT-managed laptops): a Windows Application Control policy is blocking one of the pipeline's native dependencies (`numba`, pulled in by `librosa`) from loading.
-  This is a machine security policy, not a bug in the app; ask IT to allow the blocked file under the watcher's venv, or run the watcher on an unmanaged machine.
-- `BrokenProcessPool` during BirdNET runs: usually memory pressure from too many parallel workers, each loading its own TensorFlow model.
-  Lower `BIRDNET_MAX_WORKERS` (same variable as the backend's) or close other memory-heavy apps.
-
-## Everything in one place: troubleshooting summary
+## Troubleshooting
 
 | Symptom | Cause | Fix |
-|---|---|---|
-| Analysis requests fail from the browser console with a CORS error | Backend `ALLOWED_ORIGINS` doesn't include the frontend's exact origin | Set it in `cem-backend/.env`, restart the backend |
-| App loads but sign-in/Drive storage silently does nothing | `Config.js` was never generated, or has stale values | Re-run `generate_config.sh` (Step 4), restart the frontend container |
-| `Please authorize access to your Earth Engine account` | GEE credentials missing/not mounted | Step 5 |
-| Watcher stuck "Offline (stale)" right after starting | First-run dependency install can take several minutes; heartbeat only resumes once it's done | Wait, or check the watcher's console output for real errors |
-| Watcher won't start: "Another watcher instance is already running" | Stale lock file from a crash | Delete `system/watcher.lock` |
+| --- | --- | --- |
+| 409 "no audio files ... for the selected date range" | `start_date` sent as ISO, or filenames off-convention | Send `YYYYMMDD`; rename to `SPOT_YYYYMMDD_HHMMSS.wav` |
+| BirdNET runs, finds nothing | Same as above — files silently filtered out | Check `GET /api/v1/jobs/{id}/results` |
+| 409 on publish | No completed BirdNET job, or no `aggregate.csv` | The guard is correct; check the run first |
+| CORS error in the browser console | `ALLOWED_ORIGINS` excludes the frontend origin | Exact scheme+host+port, no trailing slash |
+| Sign-in/Drive does nothing | Blank `GOOGLE_CLIENT_ID` | Expected. Server-compute mode is unaffected |
+| Share links never appear | `FILEBROWSER_BASE_URL` blank, or wrong password | See above. Failures are best-effort and only warn in the job log |
+| Spot missing from the master map | Project not public, or no `spots_geo` | `grep visibility data/projects/<p>/project.json` |
+| `BrokenProcessPool` | Memory — each worker loads its own TF model | Lower `BIRDNET_MAX_WORKERS` |
+| Watcher: "another instance is already running" | Stale lock from a crash | Delete `system/watcher.lock` |
+| Watcher: `ImportError: DLL load failed ... Application Control policy` | Managed Windows blocking `numba` | Machine policy, not a bug — ask IT to allow it |
 
-## Repo layout, for orientation
+## Layout
 
 ```
-cem-frontend/
-├── index.html, js/, styles/, leaflet/, images/   ← the SPA
-├── watcher.py               ← local-analysis daemon; also served to the browser for "Select Storage"
-├── generate_config.sh       ← writes js/core/Config.js (git-ignored)
-├── Dockerfile, docker-compose.yml, nginx.conf
-└── cloudflare-proxy/        ← separate Cloudflare Worker, only relevant if replacing the default CORS_PROXY_URL
-
-cem-backend/
-├── pipeline/                 ← analysis scripts; single source of truth (watcher pulls these from GitHub too)
-├── server/app/                ← FastAPI server code
-├── requirements.txt           ← pipeline dependencies
-├── Dockerfile, docker-compose.yml
-└── .env.example
+pipeline/          analysis scripts — single source of truth; the watcher pulls these too
+server/app/        FastAPI: stacd_api (all routes), runner, jobs, projects,
+                   retention, filebrowser_client, safepath
+data/              DATA_DIR — projects/<name>/{<spot>/audio, dataset, <script>/<job>}
+Dockerfile         CPU by default; build args switch to CUDA
 ```
+
+## Related
+
+- [cem-frontend](../cem-frontend) — the compute page this compose file starts
+- [cem-master-backend](../cem-master-backend) — indexes public projects from `DATA_DIR`
+- [cem-master-frontend](../cem-master-frontend) — the public map

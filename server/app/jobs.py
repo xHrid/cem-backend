@@ -232,7 +232,7 @@ class Job:
 # ---------------------------------------------------------------------------
 
 def _index_dir() -> Path:
-    return get_settings().DATA_DIR / "jobs_index"
+    return get_settings().jobs_index_dir
 
 
 def _write_index(job_id: str, project: str, script: str, root: Path) -> None:

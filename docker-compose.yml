@@ -6,14 +6,18 @@ services:
     image: hridayansh/cem-backend:latest
     container_name: cem-backend
     ports:
-      - "8000:8000"
+      - "${COMPUTE_BACKEND_PORT:-8002}:8000"
     environment:
+      DEBUG: ${DEBUG:-false}
       MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-2048}
       LOG_DIR: ${LOG_DIR:-/logs}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-*}
       BIRDNET_MAX_WORKERS: ${BIRDNET_MAX_WORKERS:-2}
       INDICES_MAX_WORKERS: ${INDICES_MAX_WORKERS:-}
       API_VERSION: ${API_VERSION:-1.1.0}
+      # Shared project data directory. Server compute writes private project data
+      # here; Make Public flips project metadata so the master indexer can read it.
+      DATA_DIR: ${DATA_DIR:-/data}
       STAC_ENABLED: ${STAC_ENABLED:-true}
       STAC_COLLECTION: ${STAC_COLLECTION:-cem-bioacoustics}
       STAC_ASSET_BASE_URL: ${STAC_ASSET_BASE_URL:-}
@@ -38,11 +42,49 @@ services:
       FILEBROWSER_PASSWORD: ${FILEBROWSER_PASSWORD:-admin}
       FILEBROWSER_TIMEOUT: ${FILEBROWSER_TIMEOUT:-10}
     volumes:
-      - ${HOST_DATA_DIR:-./data}:/data
+      - ${CEM_DATA_DIR_HOST:-${HOST_DATA_DIR:-./data}}:/data
       - ${HOST_LOG_DIR:-./logs}:/logs
       - ./pipeline:/app/pipeline
       - ./server/app:/app/app
       - ${EARTHENGINE_CREDENTIALS:-~/.config/earthengine}:/root/.config/earthengine:ro
+    restart: unless-stopped
+
+  # The compute page. Defined HERE, not in cem-frontend, so one
+  # `docker compose up -d` in this repo brings up the whole compute stack.
+  # One repo owns each service.
+  #
+  # ⚠️ `context: ../cem-frontend` assumes a sibling checkout -- see README.
+  # Override with COMPUTE_FRONTEND_CONTEXT if your layout differs.
+  frontend:
+    build:
+      context: ${COMPUTE_FRONTEND_CONTEXT:-../cem-frontend}
+      dockerfile: Dockerfile
+    image: cem-frontend:latest
+    container_name: cem-frontend
+    ports:
+      - "${COMPUTE_FRONTEND_PORT:-8080}:80"
+    environment:
+      DEBUG: ${DEBUG:-false}
+      # Baked into js/core/Config.js when the container starts. This is the
+      # address the BROWSER uses, so it is localhost and the host-published
+      # port -- not the compose service name, which means nothing outside the
+      # Docker network.
+      SERVER_BASE_URL: ${SERVER_BASE_URL:-http://localhost:${COMPUTE_BACKEND_PORT:-8002}}
+      # Optional. Blank disables Google Drive features; the page still works
+      # and server-compute mode is unaffected (App.js just logs a warning).
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      PICKER_API_KEY: ${PICKER_API_KEY:-}
+      AIRFLOW_TRIGGER_URL: ${AIRFLOW_TRIGGER_URL:-}
+    volumes:
+      # NOT read-only, unlike the other mounts: the entrypoint generates
+      # js/core/Config.js in here at startup. That file is gitignored, and
+      # generate_config.sh has always written it into the repo.
+      - ${COMPUTE_FRONTEND_CONTEXT:-../cem-frontend}/js:/usr/share/nginx/html/js
+      - ${COMPUTE_FRONTEND_CONTEXT:-../cem-frontend}/index.html:/usr/share/nginx/html/index.html:ro
+      - ${COMPUTE_FRONTEND_CONTEXT:-../cem-frontend}/styles:/usr/share/nginx/html/styles:ro
+      - ${COMPUTE_FRONTEND_CONTEXT:-../cem-frontend}/leaflet:/usr/share/nginx/html/leaflet:ro
+      - ${COMPUTE_FRONTEND_CONTEXT:-../cem-frontend}/images:/usr/share/nginx/html/images:ro
+      - ${COMPUTE_FRONTEND_CONTEXT:-../cem-frontend}/watcher.py:/usr/share/nginx/html/watcher.py:ro
     restart: unless-stopped
 
   filebrowser:
@@ -51,9 +93,8 @@ services:
     ports:
       - "8097:80"
     volumes:
-      # Same host folder the api container writes results into — this is the
-      # only connection between the two services; they never talk directly.
-      - ${HOST_DATA_DIR:-./data}:/srv
+      # Same DATA_DIR the api container writes results into.
+      - ${CEM_DATA_DIR_HOST:-${HOST_DATA_DIR:-./data}}:/srv
       - filebrowser_db:/database
     restart: unless-stopped
 

@@ -12,9 +12,10 @@ astral
 pytz
 psutil
 
-# TensorFlow: CPU-only by default (~250 MB). For GPU support, replace with
-# `tensorflow` (includes CUDA) and install `birdnet[and-cuda]` below.
-tensorflow-cpu
+# TensorFlow package name depends on CPU architecture. Linux x86_64 has the
+# CPU-only package; Linux/macOS ARM64 uses the regular `tensorflow` package.
+tensorflow-cpu; platform_machine == "x86_64" or platform_machine == "AMD64"
+tensorflow; platform_machine == "aarch64" or platform_machine == "arm64"
 
 # Optional GPU-accelerated inference. Install `birdnet` (official library) to
 # enable the ProtoBuf model path. On GPU hosts install `birdnet[and-cuda]`

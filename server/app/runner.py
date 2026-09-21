@@ -19,6 +19,7 @@ from . import stac
 from .jobs import Job
 from .locks import JobBusy, job_run_lock
 from .settings import get_settings
+from .debug import debug
 
 __all__ = ["run_sync", "build_command", "JobBusy", "CapacityError", "RunError"]
 
@@ -232,6 +233,7 @@ def _result_files(job: Job, step: str) -> list[str]:
 
 
 def _execute(job: Job, task_id: str, step: str, params: dict) -> None:
+    debug("job.start", job_id=job.id, task_id=task_id, step=step)
     job.update_task(task_id, status="running", started_at=_now())
     step_dir = job.step_results_dir(step)
     step_dir.mkdir(parents=True, exist_ok=True)
@@ -241,12 +243,14 @@ def _execute(job: Job, task_id: str, step: str, params: dict) -> None:
     try:
         cmd = build_command(job, step, params)
     except RunError as e:
+        debug("job.prepare_failed", job_id=job.id, step=step, code=e.code)
         log_path.write_text(f"PREP ERROR [{e.code}]: {e}\n")
         job.update_task(task_id, status="failed", finished_at=_now(),
                         error=str(e), error_code=e.code)
         return
     except Exception as e:
         log_path.write_text(f"PREP ERROR: {e}\n")
+        debug("job.prepare_failed", job_id=job.id, step=step, error=type(e).__name__)
         job.update_task(task_id, status="failed", finished_at=_now(),
                         error=str(e), error_code="PIPELINE_ERROR")
         return
@@ -264,7 +268,9 @@ def _execute(job: Job, task_id: str, step: str, params: dict) -> None:
                 text=True,
             )
         rc = proc.returncode
+        debug("job.process_finished", job_id=job.id, step=step, returncode=rc, log_path=log_path)
     except Exception as e:
+        debug("job.process_failed", job_id=job.id, step=step, error=type(e).__name__)
         job.update_task(task_id, status="failed", finished_at=_now(),
                         error=str(e), error_code="PIPELINE_ERROR")
         return
@@ -280,6 +286,7 @@ def _execute(job: Job, task_id: str, step: str, params: dict) -> None:
 
     # ---- success: collect results + write STAC sidecars ----
     results = _result_files(job, step)
+    debug("job.results", job_id=job.id, step=step, files=len(results))
     stac_warning = None
     try:
         sidecars = stac.write_items(
@@ -333,6 +340,7 @@ def run_sync(job: Job, step: str, params: dict) -> dict:
         raise ValueError(f"Unknown step '{step}'")
     sem = _get_semaphore()
     if not sem.acquire(blocking=False):
+        debug("job.capacity_rejected", job_id=job.id, step=step)
         raise CapacityError("Too many analyses running; retry shortly.")
     try:
         with job_run_lock(get_settings().run_locks_dir, job.id):

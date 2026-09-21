@@ -9,6 +9,9 @@ Three-part pipeline:
 
 import os
 import re
+import json
+import hashlib
+from pathlib import Path
 import numpy as np
 import pandas as pd
 import soundfile as sf
@@ -33,6 +36,8 @@ from birdnetlib.analyzer import Analyzer
 
 import config as cfg
 from file_metadata import parse_filename, build_record  # unified, source-agnostic
+from snippet_extractor import refresh_species_snippets
+from debug_log import debug
 
 
 # =============================================================================
@@ -226,6 +231,11 @@ def _process_single_file(item):
     filepath, spot_override = item
     # Unified metadata: filename parse + attached-spot override in one place.
     rec = build_record(filepath, spot=spot_override)
+    if rec.get("date") is None and cfg.DATE_START is not None:
+        rec["date"] = cfg.DATE_START.isoformat()
+        rec["hour"] = 0
+        rec["minute"] = 0
+        rec["second"] = 0
     filename = rec["filename"]
     try:
         df = _analyze_file(
@@ -260,10 +270,165 @@ def save_processed_files(path: str, filenames: set[str]):
             f.write(fname + "\n")
 
 
+def _project_root_for_aggregate(aggregate_path: str) -> Path:
+    candidate = Path(aggregate_path).resolve()
+    for item in [candidate, *candidate.parents]:
+        if (item / "project.json").is_file():
+            return item
+    return candidate.parent
+
+
+def _local_iucn_lookup_path() -> Path:
+    return Path(__file__).resolve().with_name("birdlife_iucn_lookup.csv")
+
+
+def _load_local_iucn_lookup() -> dict[str, str]:
+    lookup_path = _local_iucn_lookup_path()
+    if not lookup_path.is_file():
+        return {}
+
+    try:
+        df = pd.read_csv(lookup_path)
+    except Exception:
+        return {}
+
+    if df.empty:
+        return {}
+
+    required = {"scientific_name", "iucn_category"}
+    if not required.issubset(df.columns):
+        return {}
+
+    mapping: dict[str, str] = {}
+    for _, row in df.iterrows():
+        sci = str(row.get("scientific_name", "")).strip()
+        category = str(row.get("iucn_category", "")).strip()
+        if not sci or not category:
+            continue
+        mapping[sci.lower()] = category
+    return mapping
+
+
+def _load_project_iucn_cache(aggregate_path: str) -> dict[str, str]:
+    cache_path = _project_root_for_aggregate(aggregate_path) / "species_iucn_cache.json"
+    if not cache_path.is_file():
+        return {}
+    try:
+        payload = json.loads(cache_path.read_text())
+    except Exception:
+        return {}
+    if isinstance(payload, dict):
+        return {str(k).lower(): str(v).strip() for k, v in payload.items() if str(v).strip()}
+    return {}
+
+
+def _write_project_iucn_cache(aggregate_path: str, cache: dict[str, str]) -> None:
+    project_root = _project_root_for_aggregate(aggregate_path)
+    project_root.mkdir(parents=True, exist_ok=True)
+    cache_path = project_root / "species_iucn_cache.json"
+    cache_path.write_text(json.dumps(cache, indent=2, sort_keys=True))
+
+
+def make_audio_id(project: str, spot: str, filename: str) -> str:
+    payload = "\0".join([str(project).strip(), str(spot).strip(), os.path.basename(str(filename))])
+    return "aud_" + hashlib.sha256(payload.encode("utf-8")).hexdigest()[:24]
+
+
+def attach_audio_ids(df: pd.DataFrame, aggregate_path: str) -> pd.DataFrame:
+    if df.empty or "filename" not in df.columns or "spot" not in df.columns:
+        return df
+    result = df.copy()
+    project = _project_root_for_aggregate(aggregate_path).name
+    generated = result.apply(
+        lambda row: make_audio_id(project, row.get("spot", ""), row.get("filename", "")),
+        axis=1,
+    )
+    if "audio_id" not in result.columns:
+        result["audio_id"] = generated
+    else:
+        missing = result["audio_id"].isna() | (result["audio_id"].astype(str).str.strip() == "")
+        result.loc[missing, "audio_id"] = generated[missing]
+    return result
+
+
+def ensure_aggregate_audio_ids(
+    aggregate_path: str,
+    required_columns: list[str] | None = None,
+) -> list[str] | None:
+    if not os.path.isfile(aggregate_path) or os.path.getsize(aggregate_path) == 0:
+        return None
+    try:
+        existing = pd.read_csv(aggregate_path)
+    except Exception:
+        return None
+    if existing.empty or "filename" not in existing.columns or "spot" not in existing.columns:
+        columns = list(existing.columns)
+        for col in required_columns or []:
+            if col not in columns:
+                columns.append(col)
+        if columns != list(existing.columns):
+            existing.reindex(columns=columns).to_csv(aggregate_path, index=False)
+            print(f"Backfilled aggregate metadata columns: {aggregate_path}")
+        return columns
+
+    changed = False
+    needs_audio_id = "audio_id" not in existing.columns
+    if not needs_audio_id:
+        needs_audio_id = bool(
+            (existing["audio_id"].isna() | (existing["audio_id"].astype(str).str.strip() == "")).any()
+        )
+    if needs_audio_id:
+        existing = attach_audio_ids(existing, aggregate_path)
+        changed = True
+
+    columns = list(existing.columns)
+    for col in required_columns or []:
+        if col not in columns:
+            columns.append(col)
+            changed = True
+
+    if changed:
+        existing = existing.reindex(columns=columns)
+        existing.to_csv(aggregate_path, index=False)
+        print(f"Backfilled aggregate metadata columns: {aggregate_path}")
+    return list(existing.columns)
+
+
+def enrich_iucn_category(df: pd.DataFrame, aggregate_path: str) -> pd.DataFrame:
+    if df.empty:
+        return df
+
+    lookup_key = "scientific_name" if "scientific_name" in df.columns else "common_name"
+    if lookup_key not in df.columns:
+        return df
+
+    global_lookup = _load_local_iucn_lookup()
+    project_cache = _load_project_iucn_cache(aggregate_path)
+    result = df.copy()
+    out_map: dict[str, str] = {}
+
+    for species_name in sorted({str(value).strip() for value in result[lookup_key].dropna().astype(str) if str(value).strip()}):
+        norm = species_name.lower()
+        if norm in project_cache:
+            out_map[species_name] = project_cache[norm]
+            continue
+        if norm in global_lookup:
+            out_map[species_name] = global_lookup[norm]
+            project_cache[norm] = global_lookup[norm]
+            continue
+        out_map[species_name] = "Unknown"
+
+    _write_project_iucn_cache(aggregate_path, project_cache)
+    result["iucn_category"] = result[lookup_key].map(lambda value: out_map.get(str(value).strip(), "Unknown"))
+    return result
+
+
 def run_pipeline(file_list, aggregate_path, processed_files_path, spot_overrides=None):
+    debug("birdnet.start", files=len(file_list), aggregate=aggregate_path)
     spot_overrides = spot_overrides or {}   # {basename: spot_name}
     if not file_list:
         print("No new files to process.")
+        refresh_species_snippets(aggregate_path)
         return pd.DataFrame()
 
     total_cpus = multiprocessing.cpu_count()
@@ -278,6 +443,7 @@ def run_pipeline(file_list, aggregate_path, processed_files_path, spot_overrides
     else:
         n_workers = max(1, min(total_cpus // 2, 2))
     threads_per = max(1, total_cpus // n_workers)
+    debug("birdnet.workers", workers=n_workers, threads_per_worker=threads_per)
     print(f"Parallelism: {n_workers} workers × {threads_per} TFLite threads ({total_cpus} CPUs)")
 
     all_detections = []
@@ -294,6 +460,7 @@ def run_pipeline(file_list, aggregate_path, processed_files_path, spot_overrides
         with tqdm(total=len(file_list), desc="BirdNET") as pbar:
             for future in as_completed(futures):
                 filename, result = future.result()
+                debug("birdnet.file_finished", filename=filename, detections=0 if result is None else len(result))
                 processed_this_run.add(filename)
                 if result is not None:
                     all_detections.append(result)
@@ -302,12 +469,22 @@ def run_pipeline(file_list, aggregate_path, processed_files_path, spot_overrides
     new_df = pd.DataFrame()
     if all_detections:
         new_df = pd.concat(all_detections, ignore_index=True)
+        new_df = attach_audio_ids(new_df, aggregate_path)
+        new_df = enrich_iucn_category(new_df, aggregate_path)
+        existing_columns = ensure_aggregate_audio_ids(aggregate_path, list(new_df.columns))
+        if existing_columns:
+            columns = list(existing_columns)
+            columns.extend([col for col in new_df.columns if col not in columns])
+            new_df = new_df.reindex(columns=columns)
         header = not os.path.isfile(aggregate_path)
         new_df.to_csv(aggregate_path, mode="a", header=header, index=False)
         print(f"Appended {len(new_df)} detections to {aggregate_path}")
+
     else:
         print("No detections in this batch.")
 
+    refresh_species_snippets(aggregate_path)
+    debug("birdnet.finish", new_detections=len(new_df), processed=len(processed_this_run))
     already_processed.update(processed_this_run)
     save_processed_files(processed_files_path, already_processed)
     print(f"Marked {len(processed_this_run)} files as processed (total: {len(already_processed)})")

@@ -10,6 +10,8 @@
 # Base image pinned to Debian 12 "bookworm" (stable).
 ARG BASE_IMAGE=python:3.10-slim-bookworm
 FROM ${BASE_IMAGE}
+ARG TF_PACKAGE=
+ARG BN_EXTRA=
 
 ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
@@ -44,12 +46,18 @@ RUN set -eux; \
 WORKDIR /app
 
 # --- Python dependencies (pipeline + server) ---
-# --retries/--timeout keep the heavy tensorflow-cpu/birdnetlib downloads from
-# dying on a slow connection.
+# --retries/--timeout keep the heavy TensorFlow/birdnetlib downloads from dying
+# on a slow connection. TensorFlow's package name is architecture-specific:
+# linux/amd64 uses tensorflow-cpu; linux/arm64 uses tensorflow.
 COPY requirements.txt ./requirements-pipeline.txt
 COPY server/requirements-server.txt ./requirements-server.txt
 RUN pip install --upgrade pip \
-    && pip install --retries 8 --timeout 180 -r requirements-pipeline.txt \
+    && cp requirements-pipeline.txt /tmp/requirements-pipeline.txt \
+    && if [ -n "$TF_PACKAGE" ]; then sed -i '/^tensorflow-cpu;/d;/^tensorflow;/d' /tmp/requirements-pipeline.txt; fi \
+    && if [ -n "$BN_EXTRA" ]; then sed -i '/^birdnet$/d' /tmp/requirements-pipeline.txt; fi \
+    && pip install --retries 8 --timeout 180 -r /tmp/requirements-pipeline.txt \
+    && if [ -n "$TF_PACKAGE" ]; then pip install --retries 8 --timeout 180 "$TF_PACKAGE"; fi \
+    && if [ -n "$BN_EXTRA" ]; then pip install --retries 8 --timeout 180 "birdnet${BN_EXTRA}"; fi \
     && pip install --retries 8 --timeout 180 -r requirements-server.txt
 
 # --- Application code ---
@@ -57,7 +65,7 @@ RUN pip install --upgrade pip \
 # PIPELINE_DIR) so code changes don't require a Docker rebuild.
 COPY server/app ./app
 
-# Persist uploads + results here (compose mounts a named volume).
+# Persist the shared DATA_DIR. Project visibility is stored in project.json.
 VOLUME ["/data"]
 EXPOSE 8000
 

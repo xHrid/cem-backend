@@ -16,10 +16,17 @@ logs/
 
 # ---- Tests ----
 tests/
+!server/tests/
+server/tests/*
+!server/tests/test_debug.py
+!pipeline/tests/
+pipeline/tests/*
+!pipeline/tests/test_snippets.py
 
 # ---- Docs ----
 *.md
 !README.md
+!DEBUGGING.md
 
 # ---- Python ----
 __pycache__/

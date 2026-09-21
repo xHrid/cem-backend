@@ -19,6 +19,10 @@ def _bool(v: str | None, default: bool = False) -> bool:
 class Settings:
     def __init__(self) -> None:
         self.API_VERSION: str = os.environ.get("API_VERSION", "1.1.0")
+        # Shared DATA_DIR. Server compute writes project data here as private by
+        # default; Make Public only flips project metadata after server compute
+        # has produced publishable outputs. The master indexer reads public
+        # projects from this same directory.
         self.DATA_DIR: Path = Path(os.environ.get("DATA_DIR", "/data")).resolve()
         self.LOG_DIR: Path = Path(os.environ.get("LOG_DIR", "/logs")).resolve()
         self.PIPELINE_DIR: Path = Path(os.environ.get("PIPELINE_DIR", "/app/pipeline")).resolve()
@@ -75,6 +79,10 @@ class Settings:
         return self.DATA_DIR / "projects"
 
     @property
+    def public_projects_dir(self) -> Path:
+        return self.DATA_DIR / "projects"
+
+    @property
     def jobs_index_dir(self) -> Path:
         return self.DATA_DIR / "jobs_index"
 
@@ -94,5 +102,6 @@ class Settings:
 def get_settings() -> Settings:
     s = Settings()
     s.projects_dir.mkdir(parents=True, exist_ok=True)
+    s.public_projects_dir.mkdir(parents=True, exist_ok=True)
     s.jobs_index_dir.mkdir(parents=True, exist_ok=True)
     return s

@@ -53,10 +53,17 @@ def _token_cached() -> str:
         return _token
 
 
-def _request(method: str, rel: str, retry_on_401: bool = True) -> dict | None:
+def _request(
+    method: str, rel: str, retry_on_401: bool = True, body: dict | None = None
+) -> dict | None:
     s = get_settings()
     url = f"{s.FILEBROWSER_BASE_URL}/api/share/{quote(rel.lstrip('/'), safe='/')}"
-    req = urllib.request.Request(url, method=method, headers={"X-Auth": _token_cached()})
+    headers = {"X-Auth": _token_cached()}
+    data = None
+    if body is not None:
+        data = json.dumps(body).encode()
+        headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(url, data=data, method=method, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=s.FILEBROWSER_TIMEOUT) as resp:
             raw = resp.read()
@@ -67,17 +74,36 @@ def _request(method: str, rel: str, retry_on_401: bool = True) -> dict | None:
             global _token
             with _lock:
                 _token = None
-            return _request(method, rel, retry_on_401=False)
+            return _request(method, rel, retry_on_401=False, body=body)
         raise
 
 
 def create_share(path: str) -> dict | None:
-    """Create a public share link for *path* (relative to DATA_DIR, which is
-    the FileBrowser root). Returns the share record (hash, path, expire,
-    hasPassword) or None if FileBrowser is not configured."""
+    """Create a public share link for *path* (relative to the DATA_DIR-backed
+    FileBrowser root). Returns the share record (hash, path, expire,
+    hasPassword) or None if FileBrowser is not configured.
+
+    The empty JSON body is REQUIRED, not decorative. FileBrowser's
+    sharePostHandler does:
+
+        if r.Body != nil {
+            if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+                return http.StatusBadRequest, ...
+            }
+        }
+
+    An absent body decodes as io.EOF, which is an error, so a bodyless POST
+    gets 400. Older releases tolerated EOF explicitly; current ones do not.
+    Sending `{}` takes every default -- no password, no expiry.
+
+    This failed silently for as long as the feature has existed: runner.py
+    wraps the call in a best-effort try/except, so shares were never created
+    and every output_url on the master page came back null with nothing in the
+    logs but a warning line.
+    """
     if not is_configured():
         return None
-    return _request("POST", path)
+    return _request("POST", path, body={})
 
 
 def delete_share(hash_: str) -> None:

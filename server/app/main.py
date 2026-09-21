@@ -23,10 +23,12 @@ from . import pipeline_meta as meta
 from . import retention
 from . import stacd_api
 from .settings import get_settings
+from .debug import DEBUG, DebugRequests, debug
 
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
+    debug("startup", data_dir=get_settings().DATA_DIR, pipeline_dir=get_settings().PIPELINE_DIR)
     # Background output retention sweeper. No-op when disabled.
     retention.start_background()
     yield
@@ -42,6 +44,8 @@ app = FastAPI(
 
 # The only API surface: synchronous algorithm + job routes under /api/v1.
 app.include_router(stacd_api.router)
+if DEBUG:
+    app.add_middleware(DebugRequests)
 
 # Allow the browser-based static site (different origin) to call this API.
 app.add_middleware(

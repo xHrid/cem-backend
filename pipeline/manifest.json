@@ -29,7 +29,7 @@
     "depends_on": [],
     "outputs": { "master_csv": "birdnet_results.csv" },
     "aggregate_file": "birdnet_results.csv",
-    "assets": ["config.py", "file_metadata.py", "static_noise.wav", "rain_noise.wav"]
+    "assets": ["config.py", "file_metadata.py", "snippet_extractor.py", "debug_log.py", "static_noise.wav", "rain_noise.wav"]
   },
   {
     "id": "heatmaps",

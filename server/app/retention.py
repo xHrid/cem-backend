@@ -1,8 +1,10 @@
 """
 Output retention cleanup.
 
-Jobs now live inside projects: <DATA_DIR>/projects/<project>/<script>/<job_id>/.
-The sweeper walks all project/script dirs and removes expired job dirs.
+Jobs live inside DATA_DIR projects:
+<DATA_DIR>/projects/<project>/<script>/<job_id>/.
+The sweeper removes expired private job dirs. Public projects have infinite
+retention and are skipped.
 """
 import json
 import shutil
@@ -42,6 +44,17 @@ def _revoke_shares(job_dir: Path) -> None:
                 pass
 
 
+def _project_is_public(proj_dir: Path) -> bool:
+    meta_path = proj_dir / "project.json"
+    if not meta_path.is_file():
+        return False
+    try:
+        meta_d = json.loads(meta_path.read_text())
+    except Exception:
+        return False
+    return bool(meta_d.get("is_public")) or str(meta_d.get("visibility") or "").lower() == "public"
+
+
 def sweep_once(retention_hours: float | None = None) -> list[str]:
     s = get_settings()
     hours = s.RETENTION_HOURS if retention_hours is None else retention_hours
@@ -57,6 +70,8 @@ def sweep_once(retention_hours: float | None = None) -> list[str]:
 
     for proj_dir in projects_dir.iterdir():
         if not proj_dir.is_dir():
+            continue
+        if _project_is_public(proj_dir):
             continue
         for script_dir in proj_dir.iterdir():
             if not script_dir.is_dir() or script_dir.name not in script_names:
